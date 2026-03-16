@@ -9,6 +9,7 @@ import {
   CreateWorkerInput,
   EventRecord,
   Project,
+  ReportedWorkerStatus,
   RegisterProjectInput,
   Run,
   Task,
@@ -231,6 +232,30 @@ export class StateStore {
     await this.persist();
   }
 
+  async recordWorkerHeartbeat(workerId: string, status?: ReportedWorkerStatus): Promise<Worker> {
+    const worker = this.state.workers.find((entry) => entry.id === workerId);
+
+    if (!worker) {
+      throw new Error(`Worker ${workerId} not found.`);
+    }
+
+    if (status) {
+      worker.status = status;
+    }
+    worker.lastSeenAt = nowIso();
+
+    this.appendEvent({
+      type: "WorkerHeartbeat",
+      entityType: "worker",
+      entityId: worker.id,
+      payload: {
+        ...(status ? { status } : {}),
+      },
+    });
+    await this.persist();
+    return cloneState(worker);
+  }
+
   async addArtifact(taskId: string, type: Artifact["type"], pathOrText: string): Promise<Artifact> {
     const artifact: Artifact = {
       id: createId(),
@@ -249,6 +274,11 @@ export class StateStore {
     });
     await this.persist();
     return artifact;
+  }
+
+  async recordEvent(event: Omit<EventRecord, "id" | "ts">): Promise<void> {
+    this.appendEvent(event);
+    await this.persist();
   }
 
   private appendEvent(event: Omit<EventRecord, "id" | "ts">): void {

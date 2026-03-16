@@ -1,6 +1,8 @@
+import { deriveWorkerStatus, getHeartbeatAgeMs, isWorkerStale } from "../domain/workerStatus.js";
 import { AppState, TaskDetail } from "../domain/types.js";
 
 export function buildTaskDetail(state: AppState, taskId: string): TaskDetail | undefined {
+  const now = Date.now();
   const task = state.tasks.find((entry) => entry.id === taskId);
   if (!task) {
     return undefined;
@@ -47,10 +49,12 @@ export function buildTaskDetail(state: AppState, taskId: string): TaskDetail | u
           assignedWorker: {
             workerId: assignedWorker.id,
             workerName: assignedWorker.name,
-            status: assignedWorker.status,
+            status: deriveWorkerStatus(assignedWorker.status, assignedWorker.lastSeenAt, now),
             branch: assignedWorker.assignedBranch,
             worktreePath: assignedWorker.worktreePath,
             lastSeenAt: assignedWorker.lastSeenAt,
+            heartbeatAgeMs: getHeartbeatAgeMs(assignedWorker.lastSeenAt, now),
+            isStale: isWorkerStale(assignedWorker.lastSeenAt, now),
             ...(assignedWorker.processId !== undefined ? { processId: assignedWorker.processId } : {}),
           },
         }

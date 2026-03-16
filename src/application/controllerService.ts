@@ -3,15 +3,21 @@ import {
   CreateProjectWorktreeInput,
   CreateTaskInput,
   CreateWorkerInput,
+  ListWorkersInput,
+  ListWorkersResult,
   Project,
+  ReportedWorkerStatus,
   RegisterProjectInput,
+  SyncWorkerBranchInput,
   TaskDetail,
   Task,
   Worker,
+  WorkerHeartbeatInput,
   WorkerDiffSummary,
+  WorkerSyncSummary,
 } from "../domain/types.js";
-import { buildTaskDetail } from "../queries/taskQueries.js";
 import { buildWorkerSummaries } from "../queries/workerQueries.js";
+import { buildTaskDetail } from "../queries/taskQueries.js";
 import { DiffService } from "../services/diffService.js";
 import { StateStore } from "../services/stateStore.js";
 import { WindowManager } from "../services/windowManager.js";
@@ -34,8 +40,97 @@ export class ControllerService {
     return this.stateStore.listProjects();
   }
 
-  listWorkers() {
-    return buildWorkerSummaries(this.stateStore.getState());
+  async listWorkers(input: ListWorkersInput = {}): Promise<ListWorkersResult> {
+    const state = this.stateStore.getState();
+    const includesDiffMetrics =
+      input.includeDiff !== false || input.hasChanges !== undefined || input.sortBy === "changedFileCount";
+
+    const metricsEntries = includesDiffMetrics
+      ? await Promise.all(
+          state.workers.map(async (worker) => {
+            try {
+              const diff = await this.diffService.getWorkerDiff(worker);
+              return [
+                worker.id,
+                {
+                  changedFileCount: diff.totals.filesChanged,
+                  hasChanges: diff.hasChanges,
+                },
+              ] as const;
+            } catch {
+              return [worker.id, {}] as const;
+            }
+          }),
+        )
+      : [];
+
+    const summaries = buildWorkerSummaries(state, Object.fromEntries(metricsEntries));
+
+    const filtered = summaries.filter((worker) => {
+      if (input.status && worker.status !== input.status) {
+        return false;
+      }
+
+      if (input.hasChanges !== undefined && worker.hasChanges !== input.hasChanges) {
+        return false;
+      }
+
+      if (input.isStale !== undefined && worker.isStale !== input.isStale) {
+        return false;
+      }
+
+      if (input.taskId && worker.taskId !== input.taskId) {
+        return false;
+      }
+
+      if (input.branch && worker.branch !== input.branch) {
+        return false;
+      }
+
+      if (input.lastSyncStatus && worker.lastSyncStatus !== input.lastSyncStatus) {
+        return false;
+      }
+
+      return true;
+    });
+
+    const sortBy = input.sortBy ?? "lastSeenAt";
+    const sortOrder = input.sortOrder ?? "desc";
+    const direction = sortOrder === "asc" ? 1 : -1;
+
+    filtered.sort((left, right) => {
+      switch (sortBy) {
+        case "name":
+          return direction * left.workerName.localeCompare(right.workerName);
+        case "status":
+          return direction * left.status.localeCompare(right.status);
+        case "heartbeatAgeMs":
+          return direction * (left.heartbeatAgeMs - right.heartbeatAgeMs);
+        case "changedFileCount":
+          return direction * ((left.changedFileCount ?? -1) - (right.changedFileCount ?? -1));
+        case "lastSeenAt":
+        default:
+          return direction * left.lastSeenAt.localeCompare(right.lastSeenAt);
+      }
+    });
+
+    const total = filtered.length;
+    const offset = Math.max(0, input.offset ?? 0);
+    const defaultLimit = total > 0 ? total : 1;
+    const limit = Math.max(1, input.limit ?? defaultLimit);
+    const items = filtered.slice(offset, offset + limit);
+
+    return {
+      items,
+      includesDiffMetrics,
+      pagination: {
+        total,
+        limit,
+        offset,
+        count: items.length,
+        hasMore: offset + items.length < total,
+      },
+    };
   }
 
   listTasks(): Task[] {
@@ -92,6 +187,34 @@ export class ControllerService {
     return this.stateStore.createTask(input);
   }
 
+  async heartbeatWorker(workerId: string, input: WorkerHeartbeatInput = {}) {
+    const worker = this.stateStore.getWorkerById(workerId);
+    if (!worker) {
+      throw new AppError(404, "WORKER_NOT_FOUND", `Worker ${workerId} not found.`);
+    }
+
+    if (input.status && !["idle", "active", "blocked"].includes(input.status)) {
+      throw new AppError(400, "WORKER_STATUS_INVALID", "Heartbeat status must be idle, active, or blocked.");
+    }
+
+    const updatedWorker = await this.stateStore.recordWorkerHeartbeat(
+      workerId,
+      input.status as ReportedWorkerStatus | undefined,
+    );
+
+    const state = this.stateStore.getState();
+    const summary = buildWorkerSummaries({
+      ...state,
+      workers: state.workers.map((entry) => (entry.id === updatedWorker.id ? updatedWorker : entry)),
+    }).find((entry) => entry.workerId === workerId);
+
+    if (!summary) {
+      throw new AppError(500, "WORKER_HEARTBEAT_FAILED", `Worker ${workerId} could not be summarized.`);
+    }
+
+    return summary;
+  }
+
   async assignTask(input: AssignTaskInput) {
     const worker = this.stateStore.getWorkerById(input.workerId);
     if (!worker) {
@@ -137,6 +260,45 @@ export class ControllerService {
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Failed to inspect worker diff.";
       throw new AppError(422, "WORKER_DIFF_FAILED", reason);
+    }
+  }
+
+  async syncWorkerBranch(workerId: string, input: SyncWorkerBranchInput = {}): Promise<WorkerSyncSummary> {
+    const worker = this.stateStore.getWorkerById(workerId);
+    if (!worker) {
+      throw new AppError(404, "WORKER_NOT_FOUND", `Worker ${workerId} not found.`);
+    }
+
+    await this.stateStore.recordEvent({
+      type: "BranchSyncRequested",
+      entityType: "worker",
+      entityId: worker.id,
+      payload: {
+        targetBranch: input.targetBranch,
+      },
+    });
+
+    try {
+      const result = await this.worktreeManager.sync(worker, input.targetBranch);
+      await this.stateStore.recordEvent({
+        type: result.status === "synced" ? "BranchSynced" : "BranchSyncFailed",
+        entityType: "worker",
+        entityId: worker.id,
+        payload: result,
+      });
+      return result;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Failed to sync worker branch.";
+      await this.stateStore.recordEvent({
+        type: "BranchSyncFailed",
+        entityType: "worker",
+        entityId: worker.id,
+        payload: {
+          targetBranch: input.targetBranch,
+          reason,
+        },
+      });
+      throw new AppError(422, "WORKER_SYNC_FAILED", reason);
     }
   }
 

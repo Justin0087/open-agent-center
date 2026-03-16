@@ -63,6 +63,8 @@ Available endpoints:
 - `POST /api/projects`
 - `POST /api/projects/:projectId/worktrees`
 - `POST /api/workers`
+- `POST /api/workers/:workerId/heartbeat`
+- `POST /api/workers/:workerId/sync`
 - `POST /api/tasks`
 - `POST /api/assignments`
 - `POST /api/workers/:workerId/launch`
@@ -138,6 +140,90 @@ Example worker diff lookup:
 curl http://localhost:4317/api/workers/<worker-id>/diff
 ```
 
+`GET /api/workers` now returns board-oriented live fields for each worker, including:
+
+- `changedFileCount`: current modified or untracked file count from the worktree
+- `hasChanges`: whether the worker currently has local changes
+- `heartbeatAgeMs`: how old the latest worker heartbeat is
+- `isStale`: whether the latest heartbeat is older than the configured timeout
+- `lastSyncStatus`: latest sync outcome derived from the event trail
+- `lastSyncTargetBranch`: the branch most recently synced against
+- `lastSyncSummary`: operator-friendly summary of the last sync result
+
+`GET /api/workers` also supports dashboard-friendly query parameters:
+
+- `status=idle|active|blocked|offline`
+- `hasChanges=true|false`
+- `isStale=true|false`
+- `includeDiff=true|false`
+- `taskId=<task id>`
+- `branch=<branch name>`
+- `lastSyncStatus=synced|conflicted`
+- `sortBy=name|status|lastSeenAt|heartbeatAgeMs|changedFileCount`
+- `sortOrder=asc|desc`
+- `limit=<non-negative integer>`
+- `offset=<non-negative integer>`
+
+`GET /api/workers` returns:
+
+- `items`: the current page of worker summaries
+- `includesDiffMetrics`: whether this response actually computed and included live diff fields
+- `pagination.total`: number of workers after filters are applied
+- `pagination.limit`: requested page size
+- `pagination.offset`: starting index into the filtered result set
+- `pagination.count`: number of workers in the current page
+- `pagination.hasMore`: whether another page exists after the current one
+
+`includeDiff=false` skips live diff collection unless the request still needs diff-derived behavior such as `hasChanges=...` filtering or `sortBy=changedFileCount`.
+
+Example filtered worker board lookup:
+
+```bash
+curl "http://localhost:4317/api/workers?status=offline&hasChanges=true&sortBy=heartbeatAgeMs&sortOrder=desc"
+```
+
+Example task- and sync-aware worker board lookup:
+
+```bash
+curl "http://localhost:4317/api/workers?taskId=830f184f-a195-4a21-9422-c45d3bb03317&lastSyncStatus=conflicted&branch=feature/controller-query-foundation"
+```
+
+Example paginated worker board lookup:
+
+```bash
+curl "http://localhost:4317/api/workers?sortBy=name&sortOrder=asc&limit=2&offset=2"
+```
+
+Example lightweight worker board lookup without diff sampling:
+
+```bash
+curl "http://localhost:4317/api/workers?includeDiff=false&sortBy=lastSeenAt&sortOrder=desc&limit=20"
+```
+
+Example worker branch sync:
+
+```bash
+curl -X POST http://localhost:4317/api/workers/<worker-id>/sync \
+	-H "Content-Type: application/json" \
+	-d "{\"targetBranch\":\"main\"}"
+```
+
+Example worker heartbeat:
+
+```bash
+curl -X POST http://localhost:4317/api/workers/<worker-id>/heartbeat \
+	-H "Content-Type: application/json" \
+	-d "{\"status\":\"active\"}"
+```
+
+Heartbeat behavior:
+
+- workers can report `idle`, `active`, or `blocked`
+- `offline` is controller-derived, not worker-reported
+- a worker is treated as `offline` when `lastSeenAt` is older than `WORKER_HEARTBEAT_TIMEOUT_MS`
+- the default timeout is 5 minutes
+- `heartbeatAgeMs` and `isStale` are returned by worker and task read models so the UI does not need to reimplement timeout math
+
 Example task detail lookup:
 
 ```bash
@@ -148,9 +234,9 @@ curl http://localhost:4317/api/tasks/<task-id>
 
 Planned next implementation steps:
 
-- worker heartbeat and blocked-state transitions
 - dashboard UI
 - review and integration queue
+- SQLite-backed persistence and richer worker lifecycle history
 
 ## Scope Notes
 

@@ -6,7 +6,10 @@ import {
   CreateProjectWorktreeInput,
   CreateTaskInput,
   CreateWorkerInput,
+  ListWorkersInput,
   RegisterProjectInput,
+  SyncWorkerBranchInput,
+  WorkerHeartbeatInput,
 } from "../domain/types.js";
 import { AppError } from "../application/appError.js";
 import { ControllerService } from "../application/controllerService.js";
@@ -14,6 +17,124 @@ import { readJsonBody, sendJson } from "../utils/http.js";
 
 export class ApiRouter {
   constructor(private readonly controllerService: ControllerService) {}
+
+  private parseBooleanParam(value: string | null, fieldName: string): boolean | undefined {
+    if (value === null) {
+      return undefined;
+    }
+
+    if (value === "true") {
+      return true;
+    }
+
+    if (value === "false") {
+      return false;
+    }
+
+    throw new AppError(400, "INVALID_QUERY_PARAM", `${fieldName} must be true or false.`);
+  }
+
+  private parseIntegerParam(value: string | null, fieldName: string): number | undefined {
+    if (value === null) {
+      return undefined;
+    }
+
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      throw new AppError(400, "INVALID_QUERY_PARAM", `${fieldName} must be a non-negative integer.`);
+    }
+
+    return parsed;
+  }
+
+  private parseListWorkersQuery(url: URL): ListWorkersInput {
+    const status = url.searchParams.get("status");
+    const hasChanges = this.parseBooleanParam(url.searchParams.get("hasChanges"), "hasChanges");
+    const isStale = this.parseBooleanParam(url.searchParams.get("isStale"), "isStale");
+    const includeDiff = this.parseBooleanParam(url.searchParams.get("includeDiff"), "includeDiff");
+    const taskId = url.searchParams.get("taskId");
+    const branch = url.searchParams.get("branch");
+    const lastSyncStatus = url.searchParams.get("lastSyncStatus");
+    const sortBy = url.searchParams.get("sortBy");
+    const sortOrder = url.searchParams.get("sortOrder");
+    const limit = this.parseIntegerParam(url.searchParams.get("limit"), "limit");
+    const offset = this.parseIntegerParam(url.searchParams.get("offset"), "offset");
+
+    if (status && !["idle", "active", "blocked", "offline"].includes(status)) {
+      throw new AppError(400, "INVALID_QUERY_PARAM", "status must be idle, active, blocked, or offline.");
+    }
+
+    if (sortBy && !["name", "status", "lastSeenAt", "heartbeatAgeMs", "changedFileCount"].includes(sortBy)) {
+      throw new AppError(
+        400,
+        "INVALID_QUERY_PARAM",
+        "sortBy must be name, status, lastSeenAt, heartbeatAgeMs, or changedFileCount.",
+      );
+    }
+
+    if (sortOrder && !["asc", "desc"].includes(sortOrder)) {
+      throw new AppError(400, "INVALID_QUERY_PARAM", "sortOrder must be asc or desc.");
+    }
+
+    if (lastSyncStatus && !["synced", "conflicted"].includes(lastSyncStatus)) {
+      throw new AppError(400, "INVALID_QUERY_PARAM", "lastSyncStatus must be synced or conflicted.");
+    }
+
+    const query: ListWorkersInput = {};
+
+    if (status) {
+      const statusValue: NonNullable<ListWorkersInput["status"]> = status as NonNullable<ListWorkersInput["status"]>;
+      query.status = statusValue;
+    }
+
+    if (hasChanges !== undefined) {
+      query.hasChanges = hasChanges;
+    }
+
+    if (isStale !== undefined) {
+      query.isStale = isStale;
+    }
+
+    if (includeDiff !== undefined) {
+      query.includeDiff = includeDiff;
+    }
+
+    if (taskId) {
+      query.taskId = taskId;
+    }
+
+    if (branch) {
+      query.branch = branch;
+    }
+
+    if (lastSyncStatus) {
+      const lastSyncStatusValue: NonNullable<ListWorkersInput["lastSyncStatus"]> =
+        lastSyncStatus as NonNullable<ListWorkersInput["lastSyncStatus"]>;
+      query.lastSyncStatus = lastSyncStatusValue;
+    }
+
+    if (sortBy) {
+      const sortByValue: NonNullable<ListWorkersInput["sortBy"]> =
+        sortBy as NonNullable<ListWorkersInput["sortBy"]>;
+      query.sortBy = sortByValue;
+    }
+
+    if (sortOrder) {
+      const sortOrderValue: NonNullable<ListWorkersInput["sortOrder"]> =
+        sortOrder as NonNullable<ListWorkersInput["sortOrder"]>;
+      query.sortOrder = sortOrderValue;
+    }
+
+    if (limit !== undefined) {
+      query.limit = limit;
+    }
+
+    if (offset !== undefined) {
+      query.offset = offset;
+    }
+
+    return query;
+  }
 
   private getPathParam(pathname: string, index: number): string {
     const value = pathname.split("/")[index];
@@ -45,7 +166,7 @@ export class ApiRouter {
     }
 
     if (method === "GET" && url.pathname === "/api/workers") {
-      sendJson(response, 200, this.controllerService.listWorkers());
+      sendJson(response, 200, await this.controllerService.listWorkers(this.parseListWorkersQuery(url)));
       return;
     }
 
@@ -108,6 +229,22 @@ export class ApiRouter {
       const workerId = this.getPathParam(url.pathname, 3);
       const updatedWorker = await this.controllerService.launchWorker(workerId);
       sendJson(response, 200, updatedWorker);
+      return;
+    }
+
+    if (method === "POST" && /^\/api\/workers\/[^/]+\/heartbeat$/.test(url.pathname)) {
+      const workerId = this.getPathParam(url.pathname, 3);
+      const body = await readJsonBody<WorkerHeartbeatInput>(request);
+      const worker = await this.controllerService.heartbeatWorker(workerId, body);
+      sendJson(response, 200, worker);
+      return;
+    }
+
+    if (method === "POST" && /^\/api\/workers\/[^/]+\/sync$/.test(url.pathname)) {
+      const workerId = this.getPathParam(url.pathname, 3);
+      const body = await readJsonBody<SyncWorkerBranchInput>(request);
+      const result = await this.controllerService.syncWorkerBranch(workerId, body);
+      sendJson(response, 200, result);
       return;
     }
 
