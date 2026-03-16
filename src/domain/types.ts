@@ -1,4 +1,5 @@
 export type WorkerStatus = "idle" | "active" | "blocked" | "offline";
+export type ReportedWorkerStatus = Exclude<WorkerStatus, "offline">;
 export type TaskStatus = "queued" | "in_progress" | "review" | "done" | "blocked" | "canceled";
 export type RunResult = "success" | "needs_review" | "failed";
 export type EventType =
@@ -8,6 +9,7 @@ export type EventType =
   | "WorkerCreated"
   | "WorkerLaunched"
   | "WorkerLaunchFailed"
+  | "WorkerHeartbeat"
   | "TaskAssigned"
   | "TaskUnassigned"
   | "WorkStarted"
@@ -113,6 +115,36 @@ export interface CreateTaskInput {
   acceptanceChecks?: string[];
 }
 
+export interface WorkerHeartbeatInput {
+  status?: ReportedWorkerStatus;
+}
+
+export interface ListWorkersInput {
+  status?: WorkerStatus;
+  hasChanges?: boolean;
+  isStale?: boolean;
+  taskId?: string;
+  branch?: string;
+  lastSyncStatus?: "synced" | "conflicted";
+  includeDiff?: boolean;
+  sortBy?: "name" | "status" | "lastSeenAt" | "heartbeatAgeMs" | "changedFileCount";
+  sortOrder?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
+}
+
+export interface ListWorkersResult {
+  items: WorkerSummary[];
+  includesDiffMetrics: boolean;
+  pagination: {
+    total: number;
+    limit: number;
+    offset: number;
+    count: number;
+    hasMore: boolean;
+  };
+}
+
 export interface AssignTaskInput {
   taskId: string;
   workerId: string;
@@ -140,8 +172,16 @@ export interface WorkerSummary {
   worktreePath: string;
   processId?: number;
   lastSeenAt: string;
+  heartbeatAgeMs: number;
+  isStale: boolean;
   lastEventType?: EventType;
   lastEventAt?: string;
+  changedFileCount?: number;
+  hasChanges?: boolean;
+  lastSyncAt?: string;
+  lastSyncStatus?: "synced" | "conflicted";
+  lastSyncTargetBranch?: string;
+  lastSyncSummary?: string;
 }
 
 export interface WorkerDiffFile {
@@ -174,6 +214,8 @@ export interface TaskAssignedWorkerSummary {
   branch: string;
   worktreePath: string;
   lastSeenAt: string;
+  heartbeatAgeMs: number;
+  isStale: boolean;
   processId?: number;
 }
 
@@ -193,4 +235,21 @@ export interface TaskDetail {
   artifacts: Artifact[];
   events: EventRecord[];
   summary: TaskDetailSummary;
+}
+
+export interface SyncWorkerBranchInput {
+  targetBranch?: string;
+}
+
+export interface WorkerSyncSummary {
+  workerId: string;
+  workerName: string;
+  branch: string;
+  targetBranch: string;
+  generatedAt: string;
+  status: "synced" | "conflicted";
+  headSha: string;
+  hasLocalChanges: boolean;
+  conflicts: string[];
+  summary: string;
 }

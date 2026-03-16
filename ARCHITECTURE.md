@@ -96,6 +96,8 @@ Current implementation centers on:
 - worker launch
 - worker diff inspection
 - task detail inspection
+- worker heartbeat updates and derived offline detection
+- worker branch sync inspection and execution
 
 ### Application Layer
 
@@ -114,6 +116,13 @@ Current services:
 - `WorktreeManager`: provisions git worktrees
 - `DiffService`: reads git status and diff summaries from worker worktrees
 
+Current sync behavior:
+
+- worker sync fetches the target branch from origin and merges it into the worker branch
+- default sync target resolves from `origin/HEAD` when not provided explicitly
+- sync is blocked when the worker worktree has local uncommitted changes
+- merge conflicts are returned as structured sync results instead of being hidden
+
 ### Query Layer
 
 The query layer shapes data for future dashboard views.
@@ -122,6 +131,13 @@ Current query modules:
 
 - `src/queries/workerQueries.ts`
 - `src/queries/taskQueries.ts`
+
+Current worker board behavior:
+
+- `GET /api/workers` enriches persisted worker state with live diff counts from each worktree
+- the worker board also surfaces the latest branch sync result from the event log
+- worker status is derived as `offline` when heartbeat age exceeds the configured timeout
+- diff inspection failures do not fail the whole board; affected workers simply omit live diff metrics
 
 ## Current vs Planned
 
@@ -132,12 +148,11 @@ Implemented now:
 - worker launch
 - worker diff endpoint
 - task detail endpoint
+- worker branch sync endpoint
 - application-layer orchestration entry point
 
 Planned next:
 
-- branch sync and conflict summaries
-- worker heartbeat and offline detection
 - dashboard UI
 - review queue
 - SQLite migration for persistence
