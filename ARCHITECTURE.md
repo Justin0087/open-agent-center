@@ -9,7 +9,7 @@ It should be updated whenever the controller responsibilities, worker model, sto
 ```mermaid
 flowchart LR
     Operator[Operator]
-    Dashboard[Local Dashboard UI\nplanned]
+    Dashboard[Local Dashboard UI\nread-only validation]
     Controller[Local Controller API\nNode.js + TypeScript]
 
     subgraph App[Application Layer]
@@ -144,6 +144,7 @@ Current worker board behavior:
 Implemented now:
 
 - local controller API
+- same-origin dashboard UI
 - worktree provisioning
 - worker launch
 - worker diff endpoint
@@ -153,7 +154,6 @@ Implemented now:
 
 Planned next:
 
-- dashboard UI
 - review queue
 - SQLite migration for persistence
 

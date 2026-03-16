@@ -7,6 +7,7 @@ Architecture reference: [ARCHITECTURE.md](ARCHITECTURE.md)
 The current implementation focuses on the first practical slice of the system:
 
 - register a project
+- provision isolated git worktrees for workers
 - create isolated workers bound to worktree paths and branches
 - create parallel development tasks
 - assign tasks to workers
@@ -32,6 +33,7 @@ The repository now contains a minimal TypeScript controller service with:
 - local HTTP API
 - JSON-backed state persistence in `.data/state.json`
 - in-memory domain model for projects, workers, tasks, runs, artifacts, and events
+- same-origin validation dashboard served by the controller
 - a VS Code window launcher using the `code` CLI
 - an application layer for orchestration use cases
 - a git worktree provisioning service for new workers
@@ -53,6 +55,10 @@ Current source layout:
 
 Available endpoints:
 
+- `GET /`
+- `GET /dashboard`
+- `GET /dashboard.css`
+- `GET /dashboard.js`
 - `GET /health`
 - `GET /api/state`
 - `GET /api/projects`
@@ -88,19 +94,40 @@ Run the controller in development mode:
 npm run dev
 ```
 
+Open the validation dashboard in your browser:
+
+```text
+http://127.0.0.1:4317/dashboard
+```
+
+The root path redirects to `/dashboard` for convenience.
+
 Run a type check:
 
 ```bash
 npm run check
 ```
 
+Run a local smoke check for project registration, task creation, and worktree provisioning:
+
+```bash
+npm run smoke:worktree
+```
+
+The smoke script assumes the controller is already running on `http://127.0.0.1:4317` and uses the current repository root as the registered project path. By default it leaves the generated branch and worktree in place for inspection. To clean up immediately, run:
+
+```powershell
+pwsh -File scripts/smoke-provision-worktree.ps1 -Cleanup
+```
+
 Example flow:
 
 1. Register your repository as a project.
-2. Create one worker per git worktree.
-3. Create tasks.
+2. Create tasks.
+3. Ask the controller to provision one worker worktree per task.
 4. Assign tasks to workers.
 5. Launch the matching VS Code worker windows.
+6. Open `/dashboard` to validate the resulting controller state visually.
 
 Example project registration:
 
@@ -132,6 +159,14 @@ Example worktree-backed worker creation:
 curl -X POST http://localhost:4317/api/projects/<project-id>/worktrees \
 	-H "Content-Type: application/json" \
 	-d "{\"workerName\":\"copilot-1\",\"branchBase\":\"worker-board\"}"
+```
+
+You can also attach the new worker directly to a task during provisioning:
+
+```bash
+curl -X POST http://localhost:4317/api/projects/<project-id>/worktrees \
+	-H "Content-Type: application/json" \
+	-d "{\"workerName\":\"copilot-1\",\"taskId\":\"<task-id>\"}"
 ```
 
 Example worker diff lookup:
@@ -211,7 +246,7 @@ curl -X POST http://localhost:4317/api/workers/<worker-id>/sync \
 Example worker heartbeat:
 
 ```bash
-curl -X POST http://localhost:4317/api/workers/<worker-id>/heartbeat \
+curl -X POST http://127.0.0.1:4317/api/workers/<worker-id>/heartbeat \
 	-H "Content-Type: application/json" \
 	-d "{\"status\":\"active\"}"
 ```
@@ -224,6 +259,18 @@ Heartbeat behavior:
 - the default timeout is 5 minutes
 - `heartbeatAgeMs` and `isStale` are returned by worker and task read models so the UI does not need to reimplement timeout math
 
+## Dashboard
+
+The built-in dashboard is a same-origin, read-only validation page for the current demo. It polls the existing controller APIs every few seconds and renders:
+
+- controller health and refresh state
+- summary cards for projects, workers, tasks, runs, artifacts, and events
+- worker status insight cards for active, blocked, offline, and stale-heartbeat counts
+- projects, workers, and tasks tables
+- a recent event timeline
+
+The workers table is backed by the worker board API, so it also shows controller-derived status, heartbeat freshness, and changed-file counts without you having to inspect raw JSON manually.
+
 Example task detail lookup:
 
 ```bash
@@ -234,7 +281,6 @@ curl http://localhost:4317/api/tasks/<task-id>
 
 Planned next implementation steps:
 
-- dashboard UI
 - review and integration queue
 - SQLite-backed persistence and richer worker lifecycle history
 

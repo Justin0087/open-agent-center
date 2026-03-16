@@ -1,0 +1,23 @@
+{
+  "name": "open-agent-center",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local control plane for orchestrating multiple VS Code Copilot worker windows.",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node --enable-source-maps dist/index.js",
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "smoke:worktree": "pwsh -File scripts/smoke-provision-worktree.ps1"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.2"
+  }
+}
