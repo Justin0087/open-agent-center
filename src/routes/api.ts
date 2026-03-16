@@ -1,4 +1,6 @@
 import { IncomingMessage, ServerResponse } from "node:http";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { URL } from "node:url";
 
 import {
@@ -13,10 +15,32 @@ import {
 } from "../domain/types.js";
 import { AppError } from "../application/appError.js";
 import { ControllerService } from "../application/controllerService.js";
-import { readJsonBody, sendJson } from "../utils/http.js";
+import { readJsonBody, redirect, sendJson, sendText } from "../utils/http.js";
+
+const DASHBOARD_ASSET_DIR = path.resolve(process.cwd(), "public");
+const DASHBOARD_ASSETS: Record<string, { fileName: string; contentType: string }> = {
+  "/dashboard": { fileName: "dashboard.html", contentType: "text/html; charset=utf-8" },
+  "/dashboard.css": { fileName: "dashboard.css", contentType: "text/css; charset=utf-8" },
+  "/dashboard.js": { fileName: "dashboard.js", contentType: "text/javascript; charset=utf-8" },
+};
 
 export class ApiRouter {
   constructor(private readonly controllerService: ControllerService) {}
+
+  private async serveDashboardAsset(response: ServerResponse, pathname: string): Promise<void> {
+    const asset = DASHBOARD_ASSETS[pathname];
+
+    if (!asset) {
+      throw new AppError(404, "DASHBOARD_ASSET_NOT_FOUND", `Dashboard asset not found: ${pathname}`);
+    }
+
+    try {
+      const content = await readFile(path.join(DASHBOARD_ASSET_DIR, asset.fileName), "utf8");
+      sendText(response, 200, asset.contentType, content);
+    } catch {
+      throw new AppError(404, "DASHBOARD_ASSET_NOT_FOUND", `Dashboard asset not found: ${pathname}`);
+    }
+  }
 
   private parseBooleanParam(value: string | null, fieldName: string): boolean | undefined {
     if (value === null) {
@@ -149,6 +173,16 @@ export class ApiRouter {
   async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const method = request.method ?? "GET";
     const url = new URL(request.url ?? "/", "http://localhost");
+
+    if (method === "GET" && url.pathname === "/") {
+      redirect(response, "/dashboard");
+      return;
+    }
+
+    if (method === "GET" && url.pathname in DASHBOARD_ASSETS) {
+      await this.serveDashboardAsset(response, url.pathname);
+      return;
+    }
 
     if (method === "GET" && url.pathname === "/health") {
       sendJson(response, 200, { ok: true, service: "open-agent-center" });

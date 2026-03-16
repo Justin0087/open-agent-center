@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Open Agent Center Dashboard</title>
+    <link rel="stylesheet" href="/dashboard.css">
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero__inner">
+        <p class="eyebrow">Open Agent Center</p>
+        <h1>Validation Dashboard</h1>
+        <p class="hero__copy">
+          A read-only view of the current controller state for validating projects, workers, tasks, runs, artifacts, event flow, and heartbeat freshness.
+        </p>
+        <div class="hero__actions">
+          <a class="button" href="/api/state" target="_blank" rel="noreferrer">Open Raw State</a>
+          <a class="button button--secondary" href="/health" target="_blank" rel="noreferrer">Open Health</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout" id="main-content">
+      <section class="panel panel--status" aria-labelledby="controller-status-heading">
+        <div class="panel__header">
+          <h2 id="controller-status-heading">Controller Status</h2>
+          <p id="refresh-meta" class="muted">Waiting for first refresh...</p>
+        </div>
+        <div class="status-grid">
+          <div>
+            <p class="label">Health</p>
+            <p id="health-indicator" class="status-pill status-pill--unknown">Unknown</p>
+          </div>
+          <div>
+            <p class="label">Snapshot State</p>
+            <p id="snapshot-indicator" class="status-pill status-pill--unknown">Unknown</p>
+          </div>
+        </div>
+        <p id="live-region" class="sr-only" aria-live="polite"></p>
+        <div id="error-banner" class="error-banner" hidden></div>
+      </section>
+
+      <section class="panel" aria-labelledby="summary-heading">
+        <div class="panel__header">
+          <h2 id="summary-heading">Snapshot Summary</h2>
+          <p class="muted">Counts derived from the latest controller snapshot.</p>
+        </div>
+        <div class="summary-grid" id="summary-grid"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="projects-heading">
+        <div class="panel__header">
+          <h2 id="projects-heading">Projects</h2>
+          <p class="muted">Registered repositories managed by the controller.</p>
+        </div>
+        <div class="table-shell">
+          <table>
+            <caption class="sr-only">Registered projects</caption>
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Default Branch</th>
+                <th scope="col">Repository Path</th>
+                <th scope="col">Created</th>
+              </tr>
+            </thead>
+            <tbody id="projects-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="workers-heading">
+        <div class="panel__header">
+          <h2 id="workers-heading">Workers</h2>
+          <p class="muted">VS Code worker sessions, their assigned worktrees, and current heartbeat freshness.</p>
+        </div>
+        <div class="worker-insights" id="worker-insights"></div>
+        <div class="table-shell">
+          <table>
+            <caption class="sr-only">Worker sessions</caption>
+            <thead>
+              <tr>
+                <th scope="col">Worker</th>
+                <th scope="col">Status</th>
+                <th scope="col">Task</th>
+                <th scope="col">Branch</th>
+                <th scope="col">Worktree</th>
+                <th scope="col">Process</th>
+                <th scope="col">Heartbeat</th>
+                <th scope="col">Changed Files</th>
+                <th scope="col">Last Seen</th>
+              </tr>
+            </thead>
+            <tbody id="workers-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="tasks-heading">
+        <div class="panel__header">
+          <h2 id="tasks-heading">Tasks</h2>
+          <p class="muted">Parallel work items tracked by the controller.</p>
+        </div>
+        <div class="table-shell">
+          <table>
+            <caption class="sr-only">Tracked tasks</caption>
+            <thead>
+              <tr>
+                <th scope="col">Title</th>
+                <th scope="col">Status</th>
+                <th scope="col">Priority</th>
+                <th scope="col">Assigned Worker</th>
+                <th scope="col">Created</th>
+                <th scope="col">Updated</th>
+              </tr>
+            </thead>
+            <tbody id="tasks-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="events-heading">
+        <div class="panel__header">
+          <h2 id="events-heading">Recent Events</h2>
+          <p class="muted">Latest controller activity, newest first.</p>
+        </div>
+        <ol class="timeline" id="events-list"></ol>
+      </section>
+    </main>
+
+    <script src="/dashboard.js" type="module"></script>
+  </body>
+</html>
