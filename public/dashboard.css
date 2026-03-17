@@ -122,6 +122,81 @@ h1 {
   margin-bottom: 18px;
 }
 
+.review-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+}
+
+.review-list,
+.review-detail {
+  display: grid;
+  gap: 12px;
+}
+
+.review-card {
+  display: grid;
+  gap: 10px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.55);
+  padding: 16px;
+}
+
+.review-card--selected {
+  border-color: rgba(24, 77, 33, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(24, 77, 33, 0.18);
+}
+
+.review-card__title {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.review-card__meta,
+.review-detail__meta,
+.review-detail__files,
+.review-detail__artifacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.review-detail__section {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.review-notes {
+  width: 100%;
+  min-height: 112px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+  padding: 12px 14px;
+  font: inherit;
+}
+
+.review-detail__files,
+.review-detail__artifacts {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.review-file,
+.review-artifact {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--line);
+}
+
 .summary-card {
   border-radius: 18px;
   border: 1px solid var(--line);
@@ -159,6 +234,16 @@ h1 {
   background: rgba(255, 255, 255, 0.9);
   color: var(--ink);
   padding: 12px 14px;
+  font: inherit;
+}
+
+.inline-select {
+  min-width: 180px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+  padding: 8px 12px;
   font: inherit;
 }
 
@@ -274,6 +359,12 @@ tbody tr:last-child td { border-bottom: 0; }
   gap: 8px;
 }
 
+.action-note {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
 .button--mini {
   min-height: 34px;
   padding: 0 12px;
@@ -329,4 +420,5 @@ tbody tr:last-child td { border-bottom: 0; }
   .panel { padding: 18px; }
   .action-grid { grid-template-columns: 1fr; }
   .worker-insights { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+  .review-grid { grid-template-columns: 1fr; }
 }

@@ -12,7 +12,7 @@
         <p class="eyebrow">Open Agent Center</p>
         <h1>Validation Dashboard</h1>
         <p class="hero__copy">
-          A read-only view of the current controller state for validating projects, workers, tasks, runs, artifacts, event flow, and heartbeat freshness.
+          A controller surface for validating projects, workers, tasks, runs, artifacts, event flow, heartbeat freshness, task assignment, and worker branch sync flow.
         </p>
         <div class="hero__actions">
           <a class="button" href="/api/state" target="_blank" rel="noreferrer">Open Raw State</a>
@@ -96,6 +96,19 @@
             </label>
             <button class="button" type="submit">Provision Worktree</button>
           </form>
+
+          <form class="action-form" id="assign-task-form">
+            <h3>Assign Task</h3>
+            <label class="field">
+              <span>Task</span>
+              <select id="assign-task-select" name="taskId" required></select>
+            </label>
+            <label class="field">
+              <span>Worker</span>
+              <select id="assign-worker-select" name="workerId" required></select>
+            </label>
+            <button class="button" type="submit">Assign Task</button>
+          </form>
         </div>
       </section>
 
@@ -123,7 +136,7 @@
       <section class="panel" aria-labelledby="workers-heading">
         <div class="panel__header">
           <h2 id="workers-heading">Workers</h2>
-          <p class="muted">VS Code worker sessions, their assigned worktrees, and current heartbeat freshness.</p>
+          <p class="muted">VS Code worker sessions, their assigned worktrees, heartbeat freshness, and branch sync controls.</p>
         </div>
         <div class="worker-insights" id="worker-insights"></div>
         <div class="table-shell">
@@ -151,7 +164,7 @@
       <section class="panel" aria-labelledby="tasks-heading">
         <div class="panel__header">
           <h2 id="tasks-heading">Tasks</h2>
-          <p class="muted">Parallel work items tracked by the controller.</p>
+          <p class="muted">Parallel work items tracked by the controller, including direct assignment to available workers.</p>
         </div>
         <div class="table-shell">
           <table>
@@ -164,10 +177,22 @@
                 <th scope="col">Assigned Worker</th>
                 <th scope="col">Created</th>
                 <th scope="col">Updated</th>
+                <th scope="col">Actions</th>
               </tr>
             </thead>
             <tbody id="tasks-body"></tbody>
           </table>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="review-heading">
+        <div class="panel__header">
+          <h2 id="review-heading">Review Queue</h2>
+          <p class="muted">Review tasks already in `review` using task detail and worker diff data.</p>
+        </div>
+        <div class="review-grid">
+          <div class="review-list" id="review-queue"></div>
+          <div class="review-detail" id="review-detail"></div>
         </div>
       </section>
 
