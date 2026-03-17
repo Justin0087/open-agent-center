@@ -9,7 +9,9 @@
     "start": "node --enable-source-maps dist/index.js",
     "build": "tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
-    "smoke:worktree": "pwsh -File scripts/smoke-provision-worktree.ps1"
+    "smoke:worktree": "pwsh -File scripts/smoke-provision-worktree.ps1",
+    "smoke:review": "pwsh -File scripts/smoke-review-queue.ps1",
+    "smoke:review:changes": "pwsh -File scripts/smoke-review-queue.ps1 -Scenario request-changes-reassign"
   },
   "engines": {
     "node": ">=20.11"

@@ -6,6 +6,8 @@ export type EventType =
   | "ProjectRegistered"
   | "TaskCreated"
   | "TaskUpdated"
+  | "TaskMovedToReview"
+  | "TaskChangesRequested"
   | "WorkerCreated"
   | "WorkerLaunched"
   | "WorkerLaunchFailed"
@@ -150,6 +152,34 @@ export interface AssignTaskInput {
   workerId: string;
 }
 
+export type TaskTransitionAction = "unassign" | "block" | "review" | "complete" | "cancel";
+
+export interface TaskTransitionInput {
+  action: TaskTransitionAction;
+  notes?: string;
+  result?: RunResult;
+}
+
+export interface TaskTransitionResult {
+  action: TaskTransitionAction;
+  task: Task;
+  worker?: Worker;
+  run?: Run;
+}
+
+export type TaskReviewAction = "approve" | "request_changes" | "integrate";
+
+export interface TaskReviewInput {
+  action: TaskReviewAction;
+  notes?: string;
+}
+
+export interface TaskReviewResult {
+  action: TaskReviewAction;
+  task: Task;
+  artifact?: Artifact;
+}
+
 export interface CreateProjectWorktreeInput {
   workerName: string;
   branchBase?: string;
@@ -224,6 +254,7 @@ export interface TaskDetailSummary {
   artifactCount: number;
   eventCount: number;
   hasActiveRun: boolean;
+  reviewState?: "pending" | "approved";
   lastEventAt?: string;
   lastEventType?: EventType;
 }

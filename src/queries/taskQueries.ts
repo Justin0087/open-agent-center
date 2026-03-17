@@ -1,6 +1,26 @@
 import { deriveWorkerStatus, getHeartbeatAgeMs, isWorkerStale } from "../domain/workerStatus.js";
 import { AppState, TaskDetail } from "../domain/types.js";
 
+function deriveReviewState(events: TaskDetail["events"]): "pending" | "approved" | undefined {
+  const lastReviewEvent = [...events]
+    .reverse()
+    .find((entry) => ["TaskApproved", "TaskChangesRequested", "TaskIntegrated", "TaskMovedToReview"].includes(entry.type));
+
+  if (!lastReviewEvent) {
+    return undefined;
+  }
+
+  if (lastReviewEvent.type === "TaskApproved") {
+    return "approved";
+  }
+
+  if (lastReviewEvent.type === "TaskMovedToReview") {
+    return "pending";
+  }
+
+  return undefined;
+}
+
 export function buildTaskDetail(state: AppState, taskId: string): TaskDetail | undefined {
   const now = Date.now();
   const task = state.tasks.find((entry) => entry.id === taskId);
@@ -41,6 +61,7 @@ export function buildTaskDetail(state: AppState, taskId: string): TaskDetail | u
     .sort((left, right) => left.ts.localeCompare(right.ts));
 
   const lastEvent = events.at(-1);
+  const reviewState = deriveReviewState(events);
 
   return {
     task,
@@ -67,6 +88,7 @@ export function buildTaskDetail(state: AppState, taskId: string): TaskDetail | u
       artifactCount: artifacts.length,
       eventCount: events.length,
       hasActiveRun: runs.some((entry) => !entry.endAt),
+      ...(reviewState ? { reviewState } : {}),
       ...(lastEvent ? { lastEventAt: lastEvent.ts, lastEventType: lastEvent.type } : {}),
     },
   };

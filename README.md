@@ -34,6 +34,7 @@ The repository now contains a minimal TypeScript controller service with:
 - JSON-backed state persistence in `.data/state.json`
 - in-memory domain model for projects, workers, tasks, runs, artifacts, and events
 - same-origin validation dashboard served by the controller
+- dashboard operator controls for task creation, assignment, worker provisioning, launch, heartbeat, and branch sync
 - a VS Code window launcher using the `code` CLI
 - an application layer for orchestration use cases
 - a git worktree provisioning service for new workers
@@ -73,6 +74,8 @@ Available endpoints:
 - `POST /api/workers/:workerId/sync`
 - `POST /api/tasks`
 - `POST /api/assignments`
+- `POST /api/tasks/:taskId/transitions`
+- `POST /api/tasks/:taskId/review`
 - `POST /api/workers/:workerId/launch`
 
 ## Getting Started
@@ -102,6 +105,14 @@ http://127.0.0.1:4317/dashboard
 
 The root path redirects to `/dashboard` for convenience.
 
+The dashboard now supports the main operator loop directly in the browser: create tasks, provision workers, assign queued work, launch worker windows, send heartbeat updates, and trigger branch sync back to the repository default branch.
+
+The next operator slice is also available through the same dashboard task table: unassign active work, mark tasks blocked, move tasks into review, complete them, or cancel them without leaving the page.
+
+Tasks in `review` also appear in a dedicated review queue panel. The dashboard inspects `GET /api/tasks/:taskId` and `GET /api/workers/:workerId/diff` to show the latest task detail, artifacts, and worker diff summary before you approve, request changes, or integrate the work.
+
+The review panel also includes reviewer notes. When you submit approve, request changes, or integrate from the dashboard, any note you enter is stored as a `note` artifact for that task.
+
 Run a type check:
 
 ```bash
@@ -114,11 +125,27 @@ Run a local smoke check for project registration, task creation, and worktree pr
 npm run smoke:worktree
 ```
 
+Run a local smoke check for the review queue flow:
+
+```bash
+npm run smoke:review
+```
+
+Run a local smoke check for the request-changes and reassignment flow:
+
+```bash
+npm run smoke:review:changes
+```
+
 The smoke script assumes the controller is already running on `http://127.0.0.1:4317` and uses the current repository root as the registered project path. By default it leaves the generated branch and worktree in place for inspection. To clean up immediately, run:
 
 ```powershell
 pwsh -File scripts/smoke-provision-worktree.ps1 -Cleanup
 ```
+
+The review smoke script also assumes the controller is already running on `http://127.0.0.1:4317`. By default it validates `assign -> review -> approve(notes) -> integrate` and confirms that the reviewer note is persisted as a `note` artifact.
+
+`npm run smoke:review:changes` runs the alternate scenario: `assign -> review -> request_changes(notes) -> queued -> reassign -> review`. This confirms the task is returned to the queue, released from its first worker, then successfully reassigned and resubmitted for review.
 
 Example flow:
 
@@ -258,6 +285,22 @@ Heartbeat behavior:
 - a worker is treated as `offline` when `lastSeenAt` is older than `WORKER_HEARTBEAT_TIMEOUT_MS`
 - the default timeout is 5 minutes
 - `heartbeatAgeMs` and `isStale` are returned by worker and task read models so the UI does not need to reimplement timeout math
+
+Example task lifecycle transition:
+
+```bash
+curl -X POST http://127.0.0.1:4317/api/tasks/<task-id>/transitions \
+	-H "Content-Type: application/json" \
+	-d "{\"action\":\"review\"}"
+```
+
+Example review action:
+
+```bash
+curl -X POST http://127.0.0.1:4317/api/tasks/<task-id>/review \
+	-H "Content-Type: application/json" \
+	-d "{\"action\":\"approve\"}"
+```
 
 ## Dashboard
 

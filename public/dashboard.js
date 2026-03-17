@@ -30,6 +30,7 @@ const elements = {
   summaryGrid: document.querySelector("#summary-grid"),
   createTaskForm: document.querySelector("#create-task-form"),
   provisionWorkerForm: document.querySelector("#provision-worker-form"),
+  assignTaskForm: document.querySelector("#assign-task-form"),
   taskTitleInput: document.querySelector("#task-title-input"),
   taskDescriptionInput: document.querySelector("#task-description-input"),
   taskPriorityInput: document.querySelector("#task-priority-input"),
@@ -37,16 +38,27 @@ const elements = {
   workerNameInput: document.querySelector("#worker-name-input"),
   branchBaseInput: document.querySelector("#branch-base-input"),
   taskSelect: document.querySelector("#task-select"),
+  assignTaskSelect: document.querySelector("#assign-task-select"),
+  assignWorkerSelect: document.querySelector("#assign-worker-select"),
   workerInsights: document.querySelector("#worker-insights"),
   projectsBody: document.querySelector("#projects-body"),
   workersBody: document.querySelector("#workers-body"),
   tasksBody: document.querySelector("#tasks-body"),
+  reviewQueue: document.querySelector("#review-queue"),
+  reviewDetail: document.querySelector("#review-detail"),
   eventsList: document.querySelector("#events-list"),
 };
 
 let lastSnapshot = structuredClone(EMPTY_STATE);
 let lastWorkerBoard = structuredClone(EMPTY_WORKER_BOARD);
 let mutationPending = false;
+let selectedReviewTaskId = "";
+let reviewDetailRequestId = 0;
+let reviewNotesByTaskId = {};
+let actionAvailability = {
+  disableProvision: true,
+  disableAssign: true,
+};
 
 renderSnapshot(lastSnapshot, lastWorkerBoard);
 bindActions();
@@ -107,17 +119,224 @@ function renderStatus(healthy, stale, refreshedAt) {
 
 function renderSnapshot(snapshot, workerBoard) {
   renderSummary(snapshot, workerBoard);
-  renderActionForms(snapshot);
+  renderActionForms(snapshot, workerBoard.items);
   renderProjects(snapshot.projects);
   renderWorkers(workerBoard.items);
   renderTasks(snapshot.tasks, workerBoard.items);
+  renderReviewQueue(snapshot);
   renderEvents(snapshot.events);
 }
 
-function renderActionForms(snapshot) {
+function renderReviewQueue(snapshot) {
+  const reviewTasks = snapshot.tasks.filter((task) => task.status === "review");
+
+  if (reviewTasks.length === 0) {
+    selectedReviewTaskId = "";
+    elements.reviewQueue.replaceChildren(createEmptyState("No tasks are currently waiting for review."));
+    elements.reviewDetail.replaceChildren(createEmptyState("Select a review task to inspect its details and diff summary."));
+    return;
+  }
+
+  if (!reviewTasks.some((task) => task.id === selectedReviewTaskId)) {
+    selectedReviewTaskId = reviewTasks[0].id;
+  }
+
+  const cards = reviewTasks.map((task) => {
+    const card = document.createElement("article");
+    card.className = `review-card${task.id === selectedReviewTaskId ? " review-card--selected" : ""}`;
+
+    const title = document.createElement("h3");
+    title.className = "review-card__title";
+    title.textContent = task.title;
+
+    const meta = document.createElement("div");
+    meta.className = "review-card__meta";
+    meta.append(
+      statusBadge(task.status),
+      statusBadge(task.priority),
+      textSpan(formatDateTime(task.updatedAt)),
+    );
+
+    const openButton = createActionButton("Inspect", async () => {
+      selectedReviewTaskId = task.id;
+      renderReviewQueue(lastSnapshot);
+      await refreshReviewDetail();
+    }, false, true);
+
+    card.append(title, meta, openButton);
+    return card;
+  });
+
+  elements.reviewQueue.replaceChildren(...cards);
+  void refreshReviewDetail();
+}
+
+async function refreshReviewDetail() {
+  if (!selectedReviewTaskId) {
+    elements.reviewDetail.replaceChildren(createEmptyState("Select a review task to inspect its details and diff summary."));
+    return;
+  }
+
+  const requestId = ++reviewDetailRequestId;
+  elements.reviewDetail.replaceChildren(createEmptyState("Loading review detail..."));
+
+  try {
+    const detailResponse = await fetch(`/api/tasks/${selectedReviewTaskId}`, { cache: "no-store" });
+    if (!detailResponse.ok) {
+      throw new Error(`Task detail request failed with ${detailResponse.status}`);
+    }
+
+    const detail = await detailResponse.json();
+    const latestRun = [...detail.runs].reverse().find((run) => typeof run.workerId === "string");
+    let diff;
+
+    if (latestRun?.workerId) {
+      const diffResponse = await fetch(`/api/workers/${latestRun.workerId}/diff`, { cache: "no-store" });
+      if (diffResponse.ok) {
+        diff = await diffResponse.json();
+      }
+    }
+
+    if (requestId !== reviewDetailRequestId) {
+      return;
+    }
+
+    renderReviewDetail(detail, diff);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown review detail failure.";
+    elements.reviewDetail.replaceChildren(createEmptyState(`Review detail failed: ${message}`));
+  }
+}
+
+function renderReviewDetail(detail, diff) {
+  const wrapper = document.createElement("article");
+  wrapper.className = "review-card";
+  const currentNotes = reviewNotesByTaskId[detail.task.id] ?? "";
+
+  const title = document.createElement("h3");
+  title.className = "review-card__title";
+  title.textContent = detail.task.title;
+
+  const description = document.createElement("p");
+  description.textContent = detail.task.description;
+
+  const meta = document.createElement("div");
+  meta.className = "review-detail__meta";
+  meta.append(
+    statusBadge(detail.task.status),
+    statusBadge(detail.task.priority),
+    statusBadge(detail.summary.reviewState ?? "pending"),
+    textSpan(`Runs: ${detail.summary.runCount}`),
+    textSpan(`Artifacts: ${detail.summary.artifactCount}`),
+  );
+
+  const actions = document.createElement("div");
+  actions.className = "action-row";
+
+  const notesSection = document.createElement("section");
+  notesSection.className = "review-detail__section";
+
+  const notesTitle = document.createElement("h3");
+  notesTitle.textContent = "Reviewer Notes";
+
+  const notesHelp = document.createElement("p");
+  notesHelp.className = "action-note";
+  notesHelp.textContent = "These notes are stored as task artifacts and travel with approve, request changes, or integrate actions.";
+
+  const notesInput = document.createElement("textarea");
+  notesInput.className = "review-notes";
+  notesInput.placeholder = "Add reviewer context, merge rationale, or requested follow-up work...";
+  notesInput.value = currentNotes;
+  notesInput.addEventListener("input", () => {
+    reviewNotesByTaskId[detail.task.id] = notesInput.value;
+  });
+
+  actions.append(
+    createReviewActionButton(detail.task.id, "Approve", "approve", `Task ${detail.task.title} approved.`, () => notesInput.value),
+    createReviewActionButton(detail.task.id, "Request Changes", "request_changes", `Changes requested for ${detail.task.title}.`, () => notesInput.value),
+    createReviewActionButton(detail.task.id, "Integrate", "integrate", `Task ${detail.task.title} integrated.`, () => notesInput.value),
+  );
+
+  notesSection.append(notesTitle, notesHelp, notesInput);
+
+  wrapper.append(title, description, meta, notesSection, actions);
+
+  if (diff) {
+    const diffSection = document.createElement("section");
+    diffSection.className = "review-detail__section";
+
+    const diffTitle = document.createElement("h3");
+    diffTitle.textContent = "Worker Diff";
+
+    const diffSummary = document.createElement("p");
+    diffSummary.textContent = diff.summary;
+
+    const files = document.createElement("div");
+    files.className = "review-detail__files";
+    const fileEntries = diff.files.slice(0, 8).map((file) => {
+      const item = document.createElement("article");
+      item.className = "review-file";
+      item.append(
+        textSpan(file.path, "mono"),
+        textSpan(`${file.status} | +${file.additions} / -${file.deletions}`),
+      );
+      return item;
+    });
+
+    if (fileEntries.length === 0) {
+      files.append(createEmptyState("No diff files found for the latest worker run."));
+    } else {
+      files.append(...fileEntries);
+    }
+
+    diffSection.append(diffTitle, diffSummary, files);
+    wrapper.append(diffSection);
+  }
+
+  const artifactsSection = document.createElement("section");
+  artifactsSection.className = "review-detail__section";
+  const artifactsTitle = document.createElement("h3");
+  artifactsTitle.textContent = "Artifacts";
+  const artifacts = document.createElement("div");
+  artifacts.className = "review-detail__artifacts";
+  const artifactEntries = detail.artifacts.slice(-6).reverse().map((artifact) => {
+    const item = document.createElement("article");
+    item.className = "review-artifact";
+    item.append(
+      statusBadge(artifact.type),
+      textSpan(artifact.pathOrText),
+      textSpan(formatDateTime(artifact.createdAt)),
+    );
+    return item;
+  });
+
+  if (artifactEntries.length === 0) {
+    artifacts.append(createEmptyState("No artifacts recorded for this task yet."));
+  } else {
+    artifacts.append(...artifactEntries);
+  }
+
+  artifactsSection.append(artifactsTitle, artifacts);
+  wrapper.append(artifactsSection);
+
+  elements.reviewDetail.replaceChildren(wrapper);
+}
+
+function renderActionForms(snapshot, workers) {
+  const assignableTasks = getAssignableTasks(snapshot.tasks);
+  const availableWorkers = getAvailableWorkers(workers);
+
   renderProjectOptions(snapshot.projects);
-  renderTaskOptions(snapshot.tasks);
-  updateActionDisabledState(snapshot.projects.length === 0);
+  renderProvisionTaskOptions(assignableTasks);
+  renderAssignmentTaskOptions(assignableTasks);
+  renderAssignmentWorkerOptions(availableWorkers);
+
+  actionAvailability = {
+    disableProvision: snapshot.projects.length === 0,
+    disableAssign: assignableTasks.length === 0 || availableWorkers.length === 0,
+  };
+
+  updateActionDisabledState();
 }
 
 function renderSummary(snapshot, workerBoard) {
@@ -231,7 +450,7 @@ function renderTasks(tasks, workers) {
   renderTableBody(
     elements.tasksBody,
     tasks,
-    6,
+    7,
     "No tasks exist yet. Create a task to validate assignment and dashboard refresh.",
     (task) => {
       const assignedWorker = task.assignedWorkerId ? workerMap.get(task.assignedWorkerId) : undefined;
@@ -242,6 +461,7 @@ function renderTasks(tasks, workers) {
         assignedWorker ? assignedWorker.workerName : task.assignedWorkerId ?? "Unassigned",
         formatDateTime(task.createdAt),
         formatDateTime(task.updatedAt),
+        renderTaskActions(task, workers),
       ];
     },
   );
@@ -334,7 +554,7 @@ function renderProjectOptions(projects) {
   elements.projectSelect.value = stillExists ? previousValue : projects[0].id;
 }
 
-function renderTaskOptions(tasks) {
+function renderProvisionTaskOptions(tasks) {
   const previousValue = elements.taskSelect.value;
   const emptyOption = document.createElement("option");
   emptyOption.value = "";
@@ -352,13 +572,78 @@ function renderTaskOptions(tasks) {
   elements.taskSelect.value = stillExists ? previousValue : "";
 }
 
+function renderAssignmentTaskOptions(tasks) {
+  const previousValue = elements.assignTaskSelect.value;
+
+  if (tasks.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No assignable tasks";
+    elements.assignTaskSelect.replaceChildren(option);
+    elements.assignTaskSelect.value = "";
+    return;
+  }
+
+  const options = tasks.map((task) => {
+    const option = document.createElement("option");
+    option.value = task.id;
+    option.textContent = `${task.title} (${humanize(task.status)})`;
+    return option;
+  });
+
+  elements.assignTaskSelect.replaceChildren(...options);
+  const stillExists = tasks.some((task) => task.id === previousValue);
+  elements.assignTaskSelect.value = stillExists ? previousValue : tasks[0].id;
+}
+
+function renderAssignmentWorkerOptions(workers) {
+  const previousValue = elements.assignWorkerSelect.value;
+
+  if (workers.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No available workers";
+    elements.assignWorkerSelect.replaceChildren(option);
+    elements.assignWorkerSelect.value = "";
+    return;
+  }
+
+  const options = workers.map((worker) => {
+    const option = document.createElement("option");
+    option.value = worker.workerId;
+    option.textContent = `${worker.workerName} (${humanize(worker.status)})`;
+    return option;
+  });
+
+  elements.assignWorkerSelect.replaceChildren(...options);
+  const stillExists = workers.some((worker) => worker.workerId === previousValue);
+  elements.assignWorkerSelect.value = stillExists ? previousValue : workers[0].workerId;
+}
+
 function renderWorkerActions(worker) {
   const wrapper = document.createElement("div");
   wrapper.className = "action-stack";
 
+  const actionRow = document.createElement("div");
+  actionRow.className = "action-row";
+
   const launchButton = createActionButton("Launch", async () => {
     await mutateJson(`/api/workers/${worker.workerId}/launch`, { method: "POST" }, `Worker ${worker.workerName} launched.`);
   }, worker.processId !== undefined);
+
+  const syncButton = createActionButton("Sync", async () => {
+    await mutateJson(
+      `/api/workers/${worker.workerId}/sync`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      },
+      `Worker ${worker.workerName} synced with the default branch.`,
+    );
+  }, false, true);
+
+  actionRow.append(launchButton, syncButton);
 
   const heartbeatRow = document.createElement("div");
   heartbeatRow.className = "action-row";
@@ -368,7 +653,15 @@ function renderWorkerActions(worker) {
     createHeartbeatButton(worker, "blocked"),
   );
 
-  wrapper.append(launchButton, heartbeatRow);
+  wrapper.append(actionRow, heartbeatRow);
+
+  if (worker.lastSyncSummary) {
+    const note = document.createElement("p");
+    note.className = "action-note";
+    note.textContent = worker.lastSyncSummary;
+    wrapper.append(note);
+  }
+
   return wrapper;
 }
 
@@ -391,6 +684,7 @@ function createActionButton(label, handler, disabled = false, ghost = false) {
   button.type = "button";
   button.className = ghost ? "button button--mini button--secondary button--ghost" : "button button--mini";
   button.dataset.dashboardAction = "true";
+  button.dataset.baseDisabled = String(disabled);
   button.disabled = disabled || mutationPending;
   button.textContent = label;
   button.addEventListener("click", () => {
@@ -408,6 +702,11 @@ function bindActions() {
   elements.provisionWorkerForm.addEventListener("submit", (event) => {
     event.preventDefault();
     void submitProvisionWorker();
+  });
+
+  elements.assignTaskForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitAssignTask();
   });
 }
 
@@ -466,7 +765,31 @@ async function submitProvisionWorker() {
 
   elements.provisionWorkerForm.reset();
   renderProjectOptions(lastSnapshot.projects);
-  renderTaskOptions(lastSnapshot.tasks);
+  renderProvisionTaskOptions(getAssignableTasks(lastSnapshot.tasks));
+}
+
+async function submitAssignTask() {
+  const taskId = elements.assignTaskSelect.value;
+  const workerId = elements.assignWorkerSelect.value;
+
+  if (!taskId || !workerId) {
+    showError("Task and worker are required to create an assignment.");
+    announce("Task and worker are required to create an assignment.");
+    return;
+  }
+
+  const task = lastSnapshot.tasks.find((entry) => entry.id === taskId);
+  const worker = lastWorkerBoard.items.find((entry) => entry.workerId === workerId);
+
+  await mutateJson(
+    "/api/assignments",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ taskId, workerId }),
+    },
+    `Task ${task?.title ?? taskId} assigned to ${worker?.workerName ?? workerId}.`,
+  );
 }
 
 async function mutateJson(url, options, successMessage) {
@@ -506,12 +829,13 @@ async function safeReadJson(response) {
 
 function setMutationPending(value) {
   mutationPending = value;
-  updateActionDisabledState(lastSnapshot.projects.length === 0);
+  updateActionDisabledState();
 }
 
-function updateActionDisabledState(noProjects) {
-  const disableProvision = mutationPending || noProjects;
+function updateActionDisabledState() {
+  const disableProvision = mutationPending || actionAvailability.disableProvision;
   const disableTaskCreate = mutationPending;
+  const disableAssign = mutationPending || actionAvailability.disableAssign;
 
   for (const element of Array.from(elements.createTaskForm.elements)) {
     element.disabled = disableTaskCreate;
@@ -521,9 +845,137 @@ function updateActionDisabledState(noProjects) {
     element.disabled = disableProvision;
   }
 
-  for (const button of elements.workersBody.querySelectorAll("[data-dashboard-action='true']")) {
-    button.disabled = mutationPending;
+  for (const element of Array.from(elements.assignTaskForm.elements)) {
+    element.disabled = disableAssign;
   }
+
+  for (const element of document.querySelectorAll("[data-dashboard-action='true']")) {
+    element.disabled = mutationPending || element.dataset.baseDisabled === "true";
+  }
+}
+
+function renderTaskActions(task, workers) {
+  if (["done", "canceled"].includes(task.status)) {
+    return textSpan("Closed", "action-note");
+  }
+
+  if (task.status === "review") {
+    return createTaskLifecycleActions(task, [
+      ["Complete", "complete", `Task ${task.title} completed.`],
+      ["Cancel", "cancel", `Task ${task.title} canceled.`],
+    ]);
+  }
+
+  if (task.assignedWorkerId) {
+    return createTaskLifecycleActions(task, [
+      ["Unassign", "unassign", `Task ${task.title} returned to the queue.`],
+      ["Block", "block", `Task ${task.title} marked as blocked.`],
+      ["Review", "review", `Task ${task.title} moved to review.`],
+      ["Complete", "complete", `Task ${task.title} completed.`],
+      ["Cancel", "cancel", `Task ${task.title} canceled.`],
+    ]);
+  }
+
+  const availableWorkers = getAvailableWorkers(workers);
+  if (availableWorkers.length === 0 && task.status !== "blocked") {
+    return textSpan("No available workers", "action-note");
+  }
+
+  if (task.status === "blocked" && availableWorkers.length === 0) {
+    return createTaskLifecycleActions(task, [
+      ["Cancel", "cancel", `Task ${task.title} canceled.`],
+    ]);
+  }
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "action-row";
+
+  const select = document.createElement("select");
+  select.className = "inline-select";
+  select.dataset.dashboardAction = "true";
+  select.dataset.baseDisabled = "false";
+
+  for (const worker of availableWorkers) {
+    const option = document.createElement("option");
+    option.value = worker.workerId;
+    option.textContent = worker.workerName;
+    select.append(option);
+  }
+
+  const assignButton = createActionButton("Assign", async () => {
+    const selectedWorker = availableWorkers.find((worker) => worker.workerId === select.value);
+    await mutateJson(
+      "/api/assignments",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskId: task.id, workerId: select.value }),
+      },
+      `Task ${task.title} assigned to ${selectedWorker?.workerName ?? select.value}.`,
+    );
+  }, false, true);
+
+  wrapper.append(select, assignButton);
+
+  if (task.status === "blocked") {
+    wrapper.append(
+      createTaskTransitionButton(task, "Cancel", "cancel", `Task ${task.title} canceled.`),
+    );
+  }
+
+  return wrapper;
+}
+
+function getAssignableTasks(tasks) {
+  return tasks.filter((task) => !task.assignedWorkerId && !["done", "canceled", "review"].includes(task.status));
+}
+
+function getAvailableWorkers(workers) {
+  return workers.filter((worker) => !worker.taskId);
+}
+
+function createTaskLifecycleActions(task, actions) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "action-row";
+
+  for (const [label, action, successMessage] of actions) {
+    wrapper.append(createTaskTransitionButton(task, label, action, successMessage));
+  }
+
+  return wrapper;
+}
+
+function createTaskTransitionButton(task, label, action, successMessage) {
+  return createActionButton(label, async () => {
+    await mutateJson(
+      `/api/tasks/${task.id}/transitions`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      },
+      successMessage,
+    );
+  }, false, true);
+}
+
+function createReviewActionButton(taskId, label, action, successMessage, getNotes = () => "") {
+  return createActionButton(label, async () => {
+    const notes = getNotes().trim();
+    await mutateJson(
+      `/api/tasks/${taskId}/review`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, ...(notes ? { notes } : {}) }),
+      },
+      successMessage,
+    );
+
+    if (notes) {
+      reviewNotesByTaskId[taskId] = "";
+    }
+  }, false, true);
 }
 
 function statusBadge(value) {

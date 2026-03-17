@@ -13,6 +13,10 @@ import {
   RegisterProjectInput,
   Run,
   Task,
+  TaskReviewInput,
+  TaskReviewResult,
+  TaskTransitionInput,
+  TaskTransitionResult,
   Worker,
 } from "../domain/types.js";
 import { createId, nowIso } from "../utils/ids.js";
@@ -35,6 +39,54 @@ function cloneState<T>(value: T): T {
 
 export class StateStore {
   private state: AppState = cloneState(EMPTY_STATE);
+
+  private getActiveRunForTask(taskId: string): Run | undefined {
+    return [...this.state.runs]
+      .reverse()
+      .find((entry) => entry.taskId === taskId && !entry.endAt);
+  }
+
+  private releaseWorker(worker: Worker, timestamp: string): void {
+    delete worker.assignedTaskId;
+    worker.status = "idle";
+    worker.lastSeenAt = timestamp;
+  }
+
+  private closeRun(run: Run | undefined, timestamp: string, result?: Run["result"], notes?: string): Run | undefined {
+    if (!run) {
+      return undefined;
+    }
+
+    run.endAt = timestamp;
+    if (result) {
+      run.result = result;
+    }
+    if (notes?.trim()) {
+      run.notes = notes.trim();
+    }
+
+    return run;
+  }
+
+  private appendArtifactRecord(taskId: string, type: Artifact["type"], pathOrText: string, createdAt = nowIso()): Artifact {
+    const artifact: Artifact = {
+      id: createId(),
+      taskId,
+      type,
+      pathOrText,
+      createdAt,
+    };
+
+    this.state.artifacts.push(artifact);
+    this.appendEvent({
+      type: type === "diff" ? "DiffSummarized" : "WorkerProducedChanges",
+      entityType: "artifact",
+      entityId: artifact.id,
+      payload: artifact,
+    });
+
+    return artifact;
+  }
 
   async initialize(): Promise<void> {
     await mkdir(DATA_DIR, { recursive: true });
@@ -156,6 +208,22 @@ export class StateStore {
       throw new Error(`Worker ${input.workerId} not found.`);
     }
 
+    if (task.assignedWorkerId && task.assignedWorkerId !== worker.id) {
+      throw new Error(`Task ${task.id} is already assigned to another worker.`);
+    }
+
+    if (worker.assignedTaskId && worker.assignedTaskId !== task.id) {
+      throw new Error(`Worker ${worker.id} already has an active task.`);
+    }
+
+    if (["done", "canceled", "review"].includes(task.status)) {
+      throw new Error(`Task ${task.id} cannot be assigned while in status ${task.status}.`);
+    }
+
+    if (task.status === "in_progress" && task.assignedWorkerId === worker.id) {
+      throw new Error(`Task ${task.id} is already in progress on worker ${worker.id}.`);
+    }
+
     task.assignedWorkerId = worker.id;
     task.status = "in_progress";
     task.updatedAt = nowIso();
@@ -187,6 +255,180 @@ export class StateStore {
 
     await this.persist();
     return { task: cloneState(task), worker: cloneState(worker), run: cloneState(run) };
+  }
+
+  async transitionTask(taskId: string, input: TaskTransitionInput): Promise<TaskTransitionResult> {
+    const task = this.state.tasks.find((entry) => entry.id === taskId);
+    if (!task) {
+      throw new Error(`Task ${taskId} not found.`);
+    }
+
+    const timestamp = nowIso();
+    const assignedWorker = task.assignedWorkerId
+      ? this.state.workers.find((entry) => entry.id === task.assignedWorkerId)
+      : undefined;
+    const activeRun = this.getActiveRunForTask(task.id);
+    let eventType: EventRecord["type"];
+    let workerResult: Worker | undefined;
+    let runResult: Run | undefined;
+
+    switch (input.action) {
+      case "unassign": {
+        if (!assignedWorker) {
+          throw new Error(`Task ${task.id} is not currently assigned.`);
+        }
+
+        task.status = "queued";
+        delete task.assignedWorkerId;
+        task.updatedAt = timestamp;
+        this.releaseWorker(assignedWorker, timestamp);
+        runResult = this.closeRun(activeRun, timestamp, input.result ?? "failed", input.notes);
+        eventType = "TaskUnassigned";
+        workerResult = assignedWorker;
+        break;
+      }
+      case "block": {
+        if (["done", "canceled", "review"].includes(task.status)) {
+          throw new Error(`Task ${task.id} cannot be blocked from status ${task.status}.`);
+        }
+
+        task.status = "blocked";
+        task.updatedAt = timestamp;
+        if (assignedWorker) {
+          delete task.assignedWorkerId;
+          this.releaseWorker(assignedWorker, timestamp);
+          runResult = this.closeRun(activeRun, timestamp, input.result ?? "failed", input.notes);
+          workerResult = assignedWorker;
+        }
+        eventType = "TaskBlocked";
+        break;
+      }
+      case "review": {
+        if (!assignedWorker) {
+          throw new Error(`Task ${task.id} must be assigned before it can move to review.`);
+        }
+
+        task.status = "review";
+        delete task.assignedWorkerId;
+        task.updatedAt = timestamp;
+        this.releaseWorker(assignedWorker, timestamp);
+        runResult = this.closeRun(activeRun, timestamp, input.result ?? "needs_review", input.notes);
+        eventType = "TaskMovedToReview";
+        workerResult = assignedWorker;
+        break;
+      }
+      case "complete": {
+        if (!["in_progress", "review"].includes(task.status)) {
+          throw new Error(`Task ${task.id} can only complete from in_progress or review.`);
+        }
+
+        task.status = "done";
+        task.updatedAt = timestamp;
+        if (assignedWorker) {
+          delete task.assignedWorkerId;
+          this.releaseWorker(assignedWorker, timestamp);
+          workerResult = assignedWorker;
+        }
+        runResult = this.closeRun(activeRun, timestamp, input.result ?? "success", input.notes);
+        eventType = "TaskCompleted";
+        break;
+      }
+      case "cancel": {
+        if (["done", "canceled"].includes(task.status)) {
+          throw new Error(`Task ${task.id} cannot be canceled from status ${task.status}.`);
+        }
+
+        task.status = "canceled";
+        task.updatedAt = timestamp;
+        if (assignedWorker) {
+          delete task.assignedWorkerId;
+          this.releaseWorker(assignedWorker, timestamp);
+          workerResult = assignedWorker;
+        }
+        runResult = this.closeRun(activeRun, timestamp, input.result ?? "failed", input.notes);
+        eventType = "TaskCanceled";
+        break;
+      }
+      default:
+        throw new Error(`Unsupported task transition: ${input.action}.`);
+    }
+
+    this.appendEvent({
+      type: eventType,
+      entityType: "task",
+      entityId: task.id,
+      payload: {
+        action: input.action,
+        ...(workerResult ? { workerId: workerResult.id } : {}),
+        ...(runResult ? { runId: runResult.id, result: runResult.result } : {}),
+        ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
+      },
+    });
+
+    await this.persist();
+    return {
+      action: input.action,
+      task: cloneState(task),
+      ...(workerResult ? { worker: cloneState(workerResult) } : {}),
+      ...(runResult ? { run: cloneState(runResult) } : {}),
+    };
+  }
+
+  async reviewTask(taskId: string, input: TaskReviewInput): Promise<TaskReviewResult> {
+    const task = this.state.tasks.find((entry) => entry.id === taskId);
+    if (!task) {
+      throw new Error(`Task ${taskId} not found.`);
+    }
+
+    if (task.status !== "review") {
+      throw new Error(`Task ${task.id} must be in review before review actions can be applied.`);
+    }
+
+    const timestamp = nowIso();
+    let eventType: EventRecord["type"];
+
+    switch (input.action) {
+      case "approve": {
+        task.updatedAt = timestamp;
+        eventType = "TaskApproved";
+        break;
+      }
+      case "request_changes": {
+        task.status = "queued";
+        task.updatedAt = timestamp;
+        eventType = "TaskChangesRequested";
+        break;
+      }
+      case "integrate": {
+        task.status = "done";
+        task.updatedAt = timestamp;
+        eventType = "TaskIntegrated";
+        break;
+      }
+      default:
+        throw new Error(`Unsupported task review action: ${input.action}.`);
+    }
+
+    const artifact = input.notes?.trim()
+      ? this.appendArtifactRecord(task.id, "note", input.notes.trim(), timestamp)
+      : undefined;
+
+    this.appendEvent({
+      type: eventType,
+      entityType: "task",
+      entityId: task.id,
+      payload: {
+        action: input.action,
+        ...(artifact ? { artifactId: artifact.id } : {}),
+      },
+    });
+
+    await this.persist();
+    return {
+      action: input.action,
+      task: cloneState(task),
+      ...(artifact ? { artifact: cloneState(artifact) } : {}),
+    };
   }
 
   async markWorkerLaunched(workerId: string, processId?: number): Promise<Worker> {
@@ -257,21 +499,7 @@ export class StateStore {
   }
 
   async addArtifact(taskId: string, type: Artifact["type"], pathOrText: string): Promise<Artifact> {
-    const artifact: Artifact = {
-      id: createId(),
-      taskId,
-      type,
-      pathOrText,
-      createdAt: nowIso(),
-    };
-
-    this.state.artifacts.push(artifact);
-    this.appendEvent({
-      type: type === "diff" ? "DiffSummarized" : "WorkerProducedChanges",
-      entityType: "artifact",
-      entityId: artifact.id,
-      payload: artifact,
-    });
+    const artifact = this.appendArtifactRecord(taskId, type, pathOrText);
     await this.persist();
     return artifact;
   }
