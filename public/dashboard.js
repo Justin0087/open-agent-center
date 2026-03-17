@@ -28,6 +28,15 @@ const elements = {
   errorBanner: document.querySelector("#error-banner"),
   liveRegion: document.querySelector("#live-region"),
   summaryGrid: document.querySelector("#summary-grid"),
+  createTaskForm: document.querySelector("#create-task-form"),
+  provisionWorkerForm: document.querySelector("#provision-worker-form"),
+  taskTitleInput: document.querySelector("#task-title-input"),
+  taskDescriptionInput: document.querySelector("#task-description-input"),
+  taskPriorityInput: document.querySelector("#task-priority-input"),
+  projectSelect: document.querySelector("#project-select"),
+  workerNameInput: document.querySelector("#worker-name-input"),
+  branchBaseInput: document.querySelector("#branch-base-input"),
+  taskSelect: document.querySelector("#task-select"),
   workerInsights: document.querySelector("#worker-insights"),
   projectsBody: document.querySelector("#projects-body"),
   workersBody: document.querySelector("#workers-body"),
@@ -37,8 +46,10 @@ const elements = {
 
 let lastSnapshot = structuredClone(EMPTY_STATE);
 let lastWorkerBoard = structuredClone(EMPTY_WORKER_BOARD);
+let mutationPending = false;
 
 renderSnapshot(lastSnapshot, lastWorkerBoard);
+bindActions();
 refresh();
 setInterval(refresh, POLL_INTERVAL_MS);
 
@@ -96,10 +107,17 @@ function renderStatus(healthy, stale, refreshedAt) {
 
 function renderSnapshot(snapshot, workerBoard) {
   renderSummary(snapshot, workerBoard);
+  renderActionForms(snapshot);
   renderProjects(snapshot.projects);
   renderWorkers(workerBoard.items);
   renderTasks(snapshot.tasks, workerBoard.items);
   renderEvents(snapshot.events);
+}
+
+function renderActionForms(snapshot) {
+  renderProjectOptions(snapshot.projects);
+  renderTaskOptions(snapshot.tasks);
+  updateActionDisabledState(snapshot.projects.length === 0);
 }
 
 function renderSummary(snapshot, workerBoard) {
@@ -150,7 +168,7 @@ function renderWorkers(workers) {
   renderTableBody(
     elements.workersBody,
     workers,
-    9,
+    10,
     "No workers exist yet. Provision one through the controller to validate worktree orchestration.",
     (worker) => [
       worker.workerName,
@@ -162,6 +180,7 @@ function renderWorkers(workers) {
       renderHeartbeatCell(worker.heartbeatAgeMs, worker.isStale),
       worker.changedFileCount ?? "—",
       formatDateTime(worker.lastSeenAt),
+      renderWorkerActions(worker),
     ],
   );
 }
@@ -290,6 +309,221 @@ function createEmptyState(message) {
   box.className = "empty-state";
   box.textContent = message;
   return box;
+}
+
+function renderProjectOptions(projects) {
+  const previousValue = elements.projectSelect.value;
+  const options = projects.map((project) => {
+    const option = document.createElement("option");
+    option.value = project.id;
+    option.textContent = `${project.name} (${project.defaultBranch})`;
+    return option;
+  });
+
+  if (options.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No projects available";
+    elements.projectSelect.replaceChildren(option);
+    elements.projectSelect.value = "";
+    return;
+  }
+
+  elements.projectSelect.replaceChildren(...options);
+  const stillExists = projects.some((project) => project.id === previousValue);
+  elements.projectSelect.value = stillExists ? previousValue : projects[0].id;
+}
+
+function renderTaskOptions(tasks) {
+  const previousValue = elements.taskSelect.value;
+  const emptyOption = document.createElement("option");
+  emptyOption.value = "";
+  emptyOption.textContent = "No task attached";
+
+  const options = tasks.map((task) => {
+    const option = document.createElement("option");
+    option.value = task.id;
+    option.textContent = `${task.title} (${humanize(task.status)})`;
+    return option;
+  });
+
+  elements.taskSelect.replaceChildren(emptyOption, ...options);
+  const stillExists = tasks.some((task) => task.id === previousValue);
+  elements.taskSelect.value = stillExists ? previousValue : "";
+}
+
+function renderWorkerActions(worker) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "action-stack";
+
+  const launchButton = createActionButton("Launch", async () => {
+    await mutateJson(`/api/workers/${worker.workerId}/launch`, { method: "POST" }, `Worker ${worker.workerName} launched.`);
+  }, worker.processId !== undefined);
+
+  const heartbeatRow = document.createElement("div");
+  heartbeatRow.className = "action-row";
+  heartbeatRow.append(
+    createHeartbeatButton(worker, "idle"),
+    createHeartbeatButton(worker, "active"),
+    createHeartbeatButton(worker, "blocked"),
+  );
+
+  wrapper.append(launchButton, heartbeatRow);
+  return wrapper;
+}
+
+function createHeartbeatButton(worker, status) {
+  return createActionButton(humanize(status), async () => {
+    await mutateJson(
+      `/api/workers/${worker.workerId}/heartbeat`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      },
+      `Worker ${worker.workerName} heartbeat set to ${status}.`,
+    );
+  }, false, true);
+}
+
+function createActionButton(label, handler, disabled = false, ghost = false) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = ghost ? "button button--mini button--secondary button--ghost" : "button button--mini";
+  button.dataset.dashboardAction = "true";
+  button.disabled = disabled || mutationPending;
+  button.textContent = label;
+  button.addEventListener("click", () => {
+    void handler();
+  });
+  return button;
+}
+
+function bindActions() {
+  elements.createTaskForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitCreateTask();
+  });
+
+  elements.provisionWorkerForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitProvisionWorker();
+  });
+}
+
+async function submitCreateTask() {
+  const title = elements.taskTitleInput.value.trim();
+  const description = elements.taskDescriptionInput.value.trim();
+  const priority = elements.taskPriorityInput.value;
+
+  if (!title || !description) {
+    showError("Task title and description are required.");
+    announce("Task title and description are required.");
+    return;
+  }
+
+  await mutateJson(
+    "/api/tasks",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, description, priority }),
+    },
+    `Task ${title} created.`,
+  );
+
+  elements.createTaskForm.reset();
+  elements.taskPriorityInput.value = "medium";
+}
+
+async function submitProvisionWorker() {
+  const projectId = elements.projectSelect.value;
+  const workerName = elements.workerNameInput.value.trim();
+  const branchBase = elements.branchBaseInput.value.trim();
+  const taskId = elements.taskSelect.value;
+
+  if (!projectId || !workerName) {
+    showError("Project and worker name are required to provision a worker.");
+    announce("Project and worker name are required to provision a worker.");
+    return;
+  }
+
+  const payload = {
+    workerName,
+    ...(branchBase ? { branchBase } : {}),
+    ...(taskId ? { taskId } : {}),
+  };
+
+  await mutateJson(
+    `/api/projects/${projectId}/worktrees`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    `Worker ${workerName} provisioned.`,
+  );
+
+  elements.provisionWorkerForm.reset();
+  renderProjectOptions(lastSnapshot.projects);
+  renderTaskOptions(lastSnapshot.tasks);
+}
+
+async function mutateJson(url, options, successMessage) {
+  setMutationPending(true);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      const errorBody = await safeReadJson(response);
+      const message = errorBody?.error ?? `Request failed with ${response.status}`;
+      throw new Error(message);
+    }
+
+    await refresh();
+    showError("");
+    announce(successMessage);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown mutation failure.";
+    showError(`Action failed: ${message}`);
+    announce(`Action failed. ${message}`);
+  } finally {
+    setMutationPending(false);
+  }
+}
+
+async function safeReadJson(response) {
+  try {
+    return await response.json();
+  } catch {
+    return undefined;
+  }
+}
+
+function setMutationPending(value) {
+  mutationPending = value;
+  updateActionDisabledState(lastSnapshot.projects.length === 0);
+}
+
+function updateActionDisabledState(noProjects) {
+  const disableProvision = mutationPending || noProjects;
+  const disableTaskCreate = mutationPending;
+
+  for (const element of Array.from(elements.createTaskForm.elements)) {
+    element.disabled = disableTaskCreate;
+  }
+
+  for (const element of Array.from(elements.provisionWorkerForm.elements)) {
+    element.disabled = disableProvision;
+  }
+
+  for (const button of elements.workersBody.querySelectorAll("[data-dashboard-action='true']")) {
+    button.disabled = mutationPending;
+  }
 }
 
 function statusBadge(value) {

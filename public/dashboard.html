@@ -49,6 +49,56 @@
         <div class="summary-grid" id="summary-grid"></div>
       </section>
 
+      <section class="panel" aria-labelledby="actions-heading">
+        <div class="panel__header">
+          <h2 id="actions-heading">Operator Actions</h2>
+          <p class="muted">Use the current controller APIs without leaving the dashboard.</p>
+        </div>
+        <div class="action-grid">
+          <form class="action-form" id="create-task-form">
+            <h3>Create Task</h3>
+            <label class="field">
+              <span>Title</span>
+              <input id="task-title-input" name="title" type="text" required maxlength="120">
+            </label>
+            <label class="field">
+              <span>Description</span>
+              <textarea id="task-description-input" name="description" rows="4" required></textarea>
+            </label>
+            <label class="field">
+              <span>Priority</span>
+              <select id="task-priority-input" name="priority">
+                <option value="low">Low</option>
+                <option value="medium" selected>Medium</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+            <button class="button" type="submit">Create Task</button>
+          </form>
+
+          <form class="action-form" id="provision-worker-form">
+            <h3>Provision Worker</h3>
+            <label class="field">
+              <span>Project</span>
+              <select id="project-select" name="projectId" required></select>
+            </label>
+            <label class="field">
+              <span>Worker Name</span>
+              <input id="worker-name-input" name="workerName" type="text" required maxlength="80">
+            </label>
+            <label class="field">
+              <span>Branch Base</span>
+              <input id="branch-base-input" name="branchBase" type="text" maxlength="80" placeholder="optional-branch-base">
+            </label>
+            <label class="field">
+              <span>Attach Task</span>
+              <select id="task-select" name="taskId"></select>
+            </label>
+            <button class="button" type="submit">Provision Worktree</button>
+          </form>
+        </div>
+      </section>
+
       <section class="panel" aria-labelledby="projects-heading">
         <div class="panel__header">
           <h2 id="projects-heading">Projects</h2>
@@ -90,6 +140,7 @@
                 <th scope="col">Heartbeat</th>
                 <th scope="col">Changed Files</th>
                 <th scope="col">Last Seen</th>
+                <th scope="col">Actions</th>
               </tr>
             </thead>
             <tbody id="workers-body"></tbody>
