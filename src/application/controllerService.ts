@@ -10,7 +10,9 @@ import {
   RegisterProjectInput,
   SyncWorkerBranchInput,
   TaskDetail,
+  TaskReviewInput,
   Task,
+  TaskTransitionInput,
   Worker,
   WorkerHeartbeatInput,
   WorkerDiffSummary,
@@ -226,11 +228,59 @@ export class ControllerService {
       throw new AppError(404, "TASK_NOT_FOUND", `Task ${input.taskId} not found.`);
     }
 
+    if (task.assignedWorkerId && task.assignedWorkerId !== worker.id) {
+      throw new AppError(409, "TASK_ALREADY_ASSIGNED", `Task ${task.id} is already assigned.`);
+    }
+
+    if (["done", "canceled", "review"].includes(task.status)) {
+      throw new AppError(409, "TASK_STATUS_INVALID", `Task ${task.id} cannot be assigned from status ${task.status}.`);
+    }
+
     if (worker.assignedTaskId && worker.assignedTaskId !== input.taskId) {
       throw new AppError(409, "WORKER_BUSY", `Worker ${worker.id} already has an active task.`);
     }
 
     return this.stateStore.assignTask(input);
+  }
+
+  async transitionTask(taskId: string, input: TaskTransitionInput) {
+    const task = this.stateStore.getTaskById(taskId);
+    if (!task) {
+      throw new AppError(404, "TASK_NOT_FOUND", `Task ${taskId} not found.`);
+    }
+
+    if (!input.action || !["unassign", "block", "review", "complete", "cancel"].includes(input.action)) {
+      throw new AppError(400, "TASK_TRANSITION_INVALID", "Task action must be unassign, block, review, complete, or cancel.");
+    }
+
+    if (input.result && !["success", "needs_review", "failed"].includes(input.result)) {
+      throw new AppError(400, "RUN_RESULT_INVALID", "Task result must be success, needs_review, or failed.");
+    }
+
+    try {
+      return await this.stateStore.transitionTask(taskId, input);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Task transition failed.";
+      throw new AppError(409, "TASK_TRANSITION_CONFLICT", reason);
+    }
+  }
+
+  async reviewTask(taskId: string, input: TaskReviewInput) {
+    const task = this.stateStore.getTaskById(taskId);
+    if (!task) {
+      throw new AppError(404, "TASK_NOT_FOUND", `Task ${taskId} not found.`);
+    }
+
+    if (!input.action || !["approve", "request_changes", "integrate"].includes(input.action)) {
+      throw new AppError(400, "TASK_REVIEW_INVALID", "Task review action must be approve, request_changes, or integrate.");
+    }
+
+    try {
+      return await this.stateStore.reviewTask(taskId, input);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Task review failed.";
+      throw new AppError(409, "TASK_REVIEW_CONFLICT", reason);
+    }
   }
 
   async launchWorker(workerId: string): Promise<Worker> {

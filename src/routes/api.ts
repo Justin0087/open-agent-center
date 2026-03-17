@@ -11,6 +11,8 @@ import {
   ListWorkersInput,
   RegisterProjectInput,
   SyncWorkerBranchInput,
+  TaskReviewInput,
+  TaskTransitionInput,
   WorkerHeartbeatInput,
 } from "../domain/types.js";
 import { AppError } from "../application/appError.js";
@@ -256,6 +258,22 @@ export class ApiRouter {
       const body = await readJsonBody<AssignTaskInput>(request);
       const assignment = await this.controllerService.assignTask(body);
       sendJson(response, 201, assignment);
+      return;
+    }
+
+    if (method === "POST" && /^\/api\/tasks\/[^/]+\/transitions$/.test(url.pathname)) {
+      const taskId = this.getPathParam(url.pathname, 3);
+      const body = await readJsonBody<TaskTransitionInput>(request);
+      const result = await this.controllerService.transitionTask(taskId, body);
+      sendJson(response, 200, result);
+      return;
+    }
+
+    if (method === "POST" && /^\/api\/tasks\/[^/]+\/review$/.test(url.pathname)) {
+      const taskId = this.getPathParam(url.pathname, 3);
+      const body = await readJsonBody<TaskReviewInput>(request);
+      const result = await this.controllerService.reviewTask(taskId, body);
+      sendJson(response, 200, result);
       return;
     }
 
