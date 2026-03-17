@@ -306,6 +306,12 @@ curl -X POST http://127.0.0.1:4317/api/tasks/<task-id>/review \
 
 The built-in dashboard is a same-origin operator surface for the current demo. It polls the existing controller APIs every few seconds and renders:
 
+## Planning Notes
+
+Repository-managed implementation plans can live under `docs/`.
+
+- `docs/real-integration-workflow-plan.md` documents the next planned slice for turning review integration into a real repository merge workflow.
+
 - controller health and refresh state
 - summary cards for projects, workers, tasks, runs, artifacts, and events
 - worker status insight cards for active, blocked, offline, and stale-heartbeat counts
