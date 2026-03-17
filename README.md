@@ -120,6 +120,18 @@ Run a type check:
 npm run check
 ```
 
+Run the focused automated tests:
+
+```bash
+npm test
+```
+
+Type-check the test files as well:
+
+```bash
+npm run check:test
+```
+
 Run a local smoke check for project registration, task creation, and worktree provisioning:
 
 ```bash
