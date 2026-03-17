@@ -280,17 +280,17 @@ h1 {
   font-weight: 600;
 }
 
-.status-pill--healthy, .status-badge--idle, .status-badge--done, .status-badge--fresh {
+.status-pill--healthy, .status-badge--idle, .status-badge--done, .status-badge--fresh, .status-badge--approved, .status-badge--integrated {
   background: var(--good-bg);
   color: var(--good-ink);
 }
 
-.status-pill--stale, .status-badge--review, .status-badge--blocked, .status-badge--medium, .status-badge--high, .status-badge--aging, .status-badge--stale {
+.status-pill--stale, .status-badge--review, .status-badge--blocked, .status-badge--medium, .status-badge--high, .status-badge--aging, .status-badge--stale, .status-badge--pending {
   background: var(--warn-bg);
   color: var(--warn-ink);
 }
 
-.status-pill--error, .status-badge--offline, .status-badge--canceled {
+.status-pill--error, .status-badge--offline, .status-badge--canceled, .status-badge--conflicted {
   background: var(--bad-bg);
   color: var(--bad-ink);
 }

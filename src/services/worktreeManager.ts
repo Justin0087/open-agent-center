@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { Project, Worker, WorkerSyncSummary, WorktreeDefinition } from "../domain/types.js";
+import { Project, TaskIntegrationSummary, Worker, WorkerSyncSummary, WorktreeDefinition } from "../domain/types.js";
 import { nowIso } from "../utils/ids.js";
 
 const execFileAsync = promisify(execFile);
@@ -57,6 +57,27 @@ function resolveDefaultBranch(stdout: string): string {
 
   const prefix = "refs/remotes/origin/";
   return normalized.startsWith(prefix) ? normalized.slice(prefix.length) : normalized;
+}
+
+function parseRemoteHeadBranch(stdout: string): string | undefined {
+  const line = stdout
+    .split(/\r?\n/)
+    .find((entry) => entry.trim().startsWith("HEAD branch:"));
+
+  if (!line) {
+    return undefined;
+  }
+
+  const value = line.split(":", 2)[1]?.trim();
+  return value || undefined;
+}
+
+function resolveRepoPath(commonDir: string): string {
+  if (path.basename(commonDir).toLowerCase() === ".git") {
+    return path.dirname(commonDir);
+  }
+
+  return path.resolve(commonDir, "..");
 }
 
 export class WorktreeManager {
@@ -157,14 +178,164 @@ export class WorktreeManager {
     };
   }
 
-  private async getDefaultBranch(worktreePath: string): Promise<string> {
-    const { stdout } = await execFileAsync(GIT_COMMAND, [
-      "-C",
-      worktreePath,
-      "symbolic-ref",
-      "refs/remotes/origin/HEAD",
+  async integrate(worker: Worker, targetBranch?: string): Promise<TaskIntegrationSummary> {
+    const resolvedTargetBranch = targetBranch ?? (await this.getDefaultBranch(worker.worktreePath));
+    const repoPath = await this.getRepoPath(worker.worktreePath);
+
+    await execFileAsync(GIT_COMMAND, ["-C", repoPath, "fetch", "origin", resolvedTargetBranch]);
+
+    const [{ stdout: headStdout }, { stdout: branchStdout }, { stdout: dirtyStdout }] = await Promise.all([
+      execFileAsync(GIT_COMMAND, ["-C", repoPath, "rev-parse", "HEAD"]),
+      execFileAsync(GIT_COMMAND, ["-C", repoPath, "rev-parse", "--abbrev-ref", "HEAD"]),
+      execFileAsync(GIT_COMMAND, ["-C", repoPath, "status", "--short"]),
     ]);
 
-    return resolveDefaultBranch(stdout);
+    const headSha = headStdout.trim();
+    const currentBranch = branchStdout.trim();
+    const dirty = hasDirtyChanges(dirtyStdout);
+
+    if (dirty) {
+      return {
+        workerId: worker.id,
+        workerName: worker.name,
+        sourceBranch: worker.assignedBranch,
+        targetBranch: resolvedTargetBranch,
+        repoPath,
+        generatedAt: nowIso(),
+        status: "blocked",
+        headSha,
+        hasLocalChanges: true,
+        conflicts: [],
+        summary: `Integration blocked because ${resolvedTargetBranch} has local changes in ${repoPath}.`,
+      };
+    }
+
+    if (currentBranch !== resolvedTargetBranch) {
+      return {
+        workerId: worker.id,
+        workerName: worker.name,
+        sourceBranch: worker.assignedBranch,
+        targetBranch: resolvedTargetBranch,
+        repoPath,
+        generatedAt: nowIso(),
+        status: "blocked",
+        headSha,
+        hasLocalChanges: false,
+        conflicts: [],
+        summary: `Integration blocked because ${repoPath} is currently on ${currentBranch}, not ${resolvedTargetBranch}.`,
+      };
+    }
+
+    try {
+      await execFileAsync(GIT_COMMAND, ["-C", repoPath, "merge", "--ff-only", `origin/${resolvedTargetBranch}`]);
+    } catch {
+      const { stdout: currentHeadStdout } = await execFileAsync(GIT_COMMAND, ["-C", repoPath, "rev-parse", "HEAD"]);
+      return {
+        workerId: worker.id,
+        workerName: worker.name,
+        sourceBranch: worker.assignedBranch,
+        targetBranch: resolvedTargetBranch,
+        repoPath,
+        generatedAt: nowIso(),
+        status: "blocked",
+        headSha: currentHeadStdout.trim(),
+        hasLocalChanges: false,
+        conflicts: [],
+        summary: `Integration blocked because ${resolvedTargetBranch} could not be fast-forwarded to origin/${resolvedTargetBranch}.`,
+      };
+    }
+
+    try {
+      await execFileAsync(GIT_COMMAND, ["-C", repoPath, "merge", "--no-edit", worker.assignedBranch]);
+    } catch {
+      const [{ stdout: statusStdout }, { stdout: currentHeadStdout }] = await Promise.all([
+        execFileAsync(GIT_COMMAND, ["-C", repoPath, "status", "--short"]),
+        execFileAsync(GIT_COMMAND, ["-C", repoPath, "rev-parse", "HEAD"]),
+      ]);
+      const conflicts = parseConflictPaths(statusStdout);
+
+      return {
+        workerId: worker.id,
+        workerName: worker.name,
+        sourceBranch: worker.assignedBranch,
+        targetBranch: resolvedTargetBranch,
+        repoPath,
+        generatedAt: nowIso(),
+        status: "conflicted",
+        headSha: currentHeadStdout.trim(),
+        hasLocalChanges: true,
+        conflicts,
+        summary:
+          conflicts.length > 0
+            ? `Integration produced ${conflicts.length} conflict${conflicts.length === 1 ? "" : "s"} on ${resolvedTargetBranch}.`
+            : `Integration failed while merging ${worker.assignedBranch} into ${resolvedTargetBranch}.`,
+      };
+    }
+
+    const { stdout: mergedHeadStdout } = await execFileAsync(GIT_COMMAND, ["-C", repoPath, "rev-parse", "HEAD"]);
+    return {
+      workerId: worker.id,
+      workerName: worker.name,
+      sourceBranch: worker.assignedBranch,
+      targetBranch: resolvedTargetBranch,
+      repoPath,
+      generatedAt: nowIso(),
+      status: "integrated",
+      headSha: mergedHeadStdout.trim(),
+      hasLocalChanges: false,
+      conflicts: [],
+      summary: `Integrated ${worker.assignedBranch} into ${resolvedTargetBranch} at ${mergedHeadStdout.trim()}.`,
+    };
+  }
+
+  private async getDefaultBranch(worktreePath: string): Promise<string> {
+    try {
+      const { stdout } = await execFileAsync(GIT_COMMAND, [
+        "-C",
+        worktreePath,
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+      ]);
+
+      return resolveDefaultBranch(stdout);
+    } catch {
+      try {
+        const { stdout } = await execFileAsync(GIT_COMMAND, ["-C", worktreePath, "remote", "show", "origin"]);
+        const remoteHeadBranch = parseRemoteHeadBranch(stdout);
+        if (remoteHeadBranch) {
+          return remoteHeadBranch;
+        }
+      } catch {
+        // Fall through to local branch heuristics.
+      }
+
+      try {
+        await execFileAsync(GIT_COMMAND, ["-C", worktreePath, "show-ref", "--verify", "refs/heads/main"]);
+        return "main";
+      } catch {
+        // Ignore and continue.
+      }
+
+      try {
+        await execFileAsync(GIT_COMMAND, ["-C", worktreePath, "show-ref", "--verify", "refs/heads/master"]);
+        return "master";
+      } catch {
+        // Ignore and continue.
+      }
+
+      const { stdout: currentBranchStdout } = await execFileAsync(GIT_COMMAND, [
+        "-C",
+        worktreePath,
+        "rev-parse",
+        "--abbrev-ref",
+        "HEAD",
+      ]);
+      return currentBranchStdout.trim() || "main";
+    }
+  }
+
+  private async getRepoPath(worktreePath: string): Promise<string> {
+    const { stdout } = await execFileAsync(GIT_COMMAND, ["-C", worktreePath, "rev-parse", "--git-common-dir"]);
+    return resolveRepoPath(path.resolve(worktreePath, stdout.trim()));
   }
 }

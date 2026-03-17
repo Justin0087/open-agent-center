@@ -8,6 +8,8 @@ export type EventType =
   | "TaskUpdated"
   | "TaskMovedToReview"
   | "TaskChangesRequested"
+  | "TaskIntegrationBlocked"
+  | "TaskIntegrationConflicted"
   | "WorkerCreated"
   | "WorkerLaunched"
   | "WorkerLaunchFailed"
@@ -169,6 +171,20 @@ export interface TaskTransitionResult {
 
 export type TaskReviewAction = "approve" | "request_changes" | "integrate";
 
+export interface TaskIntegrationSummary {
+  workerId: string;
+  workerName: string;
+  sourceBranch: string;
+  targetBranch: string;
+  repoPath: string;
+  generatedAt: string;
+  status: "integrated" | "conflicted" | "blocked";
+  headSha: string;
+  hasLocalChanges: boolean;
+  conflicts: string[];
+  summary: string;
+}
+
 export interface TaskReviewInput {
   action: TaskReviewAction;
   notes?: string;
@@ -178,6 +194,7 @@ export interface TaskReviewResult {
   action: TaskReviewAction;
   task: Task;
   artifact?: Artifact;
+  integration?: TaskIntegrationSummary;
 }
 
 export interface CreateProjectWorktreeInput {
@@ -254,7 +271,7 @@ export interface TaskDetailSummary {
   artifactCount: number;
   eventCount: number;
   hasActiveRun: boolean;
-  reviewState?: "pending" | "approved";
+  reviewState?: "pending" | "approved" | "blocked" | "conflicted";
   lastEventAt?: string;
   lastEventType?: EventType;
 }

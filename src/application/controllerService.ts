@@ -276,8 +276,30 @@ export class ControllerService {
     }
 
     try {
+      if (input.action === "integrate") {
+        const detail = this.getTaskDetail(taskId);
+        const latestRun = [...detail.runs].reverse().find((run) => typeof run.workerId === "string");
+
+        if (!latestRun) {
+          throw new AppError(409, "TASK_REVIEW_CONFLICT", `Task ${taskId} has no worker run available for integration.`);
+        }
+
+        const worker = this.stateStore.getWorkerById(latestRun.workerId);
+        if (!worker) {
+          throw new AppError(409, "WORKER_NOT_FOUND", `Worker ${latestRun.workerId} not found for integration.`);
+        }
+
+        const project = this.resolveProjectForWorker(worker);
+        const integration = await this.worktreeManager.integrate(worker, project?.defaultBranch);
+        return await this.stateStore.reviewTask(taskId, input, integration);
+      }
+
       return await this.stateStore.reviewTask(taskId, input);
     } catch (error) {
+      if (error instanceof AppError) {
+        throw error;
+      }
+
       const reason = error instanceof Error ? error.message : "Task review failed.";
       throw new AppError(409, "TASK_REVIEW_CONFLICT", reason);
     }
@@ -382,4 +404,16 @@ export class ControllerService {
       worktree,
     };
   }
+
+  private resolveProjectForWorker(worker: Worker): Project | undefined {
+    const projects = this.stateStore.listProjects();
+    return projects.find((project) => {
+      const worktreeRoot = `${project.repoPath}.worktrees`;
+      return worker.worktreePath === project.repoPath || worker.worktreePath.startsWith(`${worktreeRoot}${requirePathSeparator(worktreeRoot)}`) || worker.worktreePath.startsWith(worktreeRoot);
+    });
+  }
+}
+
+function requirePathSeparator(value: string): string {
+  return value.endsWith("\\") || value.endsWith("/") ? "" : "\\";
 }
