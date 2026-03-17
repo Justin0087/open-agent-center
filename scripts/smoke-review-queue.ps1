@@ -1,6 +1,6 @@
 param(
   [string]$BaseUrl = "http://127.0.0.1:4317",
-  [ValidateSet("approve-integrate", "request-changes-reassign")]
+  [ValidateSet("approve-integrate", "approve-conflict", "request-changes-reassign")]
   [string]$Scenario = "approve-integrate",
   [string]$SourceRepoPath = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
   [string]$TempRoot = (Join-Path $env:TEMP "open-agent-center-review-smoke"),
@@ -78,22 +78,47 @@ function New-IntegrationValidationRepo {
 function New-WorkerCommit {
   param(
     [Parameter(Mandatory = $true)]
-    [string]$WorkerPath
+    [string]$WorkerPath,
+
+    [string]$FileName = "INTEGRATION_SMOKE.md",
+
+    [string[]]$Content = @(
+      "# Integration Smoke",
+      "",
+      "This file was created by the real approve -> integrate validation."
+    )
   )
 
-  $targetFile = Join-Path $WorkerPath "INTEGRATION_SMOKE.md"
-  @(
-    "# Integration Smoke",
-    "",
-    "This file was created by the real approve -> integrate validation."
-  ) | Set-Content -Path $targetFile -Encoding utf8
+  $targetFile = Join-Path $WorkerPath $FileName
+  $Content | Set-Content -Path $targetFile -Encoding utf8
 
   Invoke-Git -Arguments @("-C", $WorkerPath, "config", "user.name", "Open Agent Center Smoke") | Out-Null
   Invoke-Git -Arguments @("-C", $WorkerPath, "config", "user.email", "open-agent-center-smoke@example.com") | Out-Null
-  Invoke-Git -Arguments @("-C", $WorkerPath, "add", "INTEGRATION_SMOKE.md") | Out-Null
+  Invoke-Git -Arguments @("-C", $WorkerPath, "add", $FileName) | Out-Null
   Invoke-Git -Arguments @("-C", $WorkerPath, "commit", "-m", "Add integration smoke artifact") | Out-Null
 
   return (Invoke-Git -Arguments @("-C", $WorkerPath, "rev-parse", "HEAD")).Trim()
+}
+
+function New-MainConflictCommit {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$RepoPath,
+
+    [string]$FileName = "INTEGRATION_CONFLICT_SMOKE.md"
+  )
+
+  $targetFile = Join-Path $RepoPath $FileName
+  @(
+    "# Integration Conflict Smoke",
+    "",
+    "This line was committed on main to force a merge conflict."
+  ) | Set-Content -Path $targetFile -Encoding utf8
+
+  Invoke-Git -Arguments @("-C", $RepoPath, "add", $FileName) | Out-Null
+  Invoke-Git -Arguments @("-C", $RepoPath, "commit", "-m", "Add integration conflict smoke artifact on main") | Out-Null
+
+  return (Invoke-Git -Arguments @("-C", $RepoPath, "rev-parse", "HEAD")).Trim()
 }
 
 Write-Host "Checking controller health at $BaseUrl ..." -ForegroundColor Cyan
@@ -107,7 +132,7 @@ $worker = $null
 $validationRepoPath = $null
 $workerCommit = $null
 
-if ($Scenario -eq "approve-integrate") {
+if ($Scenario -in @("approve-integrate", "approve-conflict")) {
   Write-Host "Preparing isolated validation repository..." -ForegroundColor Cyan
   $validationRepoPath = New-IntegrationValidationRepo -SourceRepoPath $SourceRepoPath -TempRoot $TempRoot
 
@@ -138,13 +163,19 @@ if ($Scenario -eq "request-changes-reassign") {
 }
 
 Write-Host "Creating smoke review task..." -ForegroundColor Cyan
-$task = Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/tasks" -Body @{
+$taskBody = @{
   title = $TaskTitle
   description = "Verify assign -> review -> approve(notes) -> integrate flow."
   priority = "high"
 }
 
-if ($Scenario -eq "approve-integrate") {
+if ($project) {
+  $taskBody.projectId = $project.id
+}
+
+$task = Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/tasks" -Body $taskBody
+
+if ($Scenario -in @("approve-integrate", "approve-conflict")) {
   Write-Host "Provisioning worktree-backed worker..." -ForegroundColor Cyan
   $provisioned = Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/projects/$($project.id)/worktrees" -Body @{
     workerName = $WorkerName
@@ -152,7 +183,18 @@ if ($Scenario -eq "approve-integrate") {
     branchBase = "integration-smoke"
   }
   $worker = $provisioned.worker
-  $workerCommit = New-WorkerCommit -WorkerPath $worker.worktreePath
+
+  if ($Scenario -eq "approve-conflict") {
+    $workerCommit = New-WorkerCommit -WorkerPath $worker.worktreePath -FileName "INTEGRATION_CONFLICT_SMOKE.md" -Content @(
+      "# Integration Conflict Smoke",
+      "",
+      "This line was committed on the worker branch to force a merge conflict."
+    )
+    $mainConflictCommit = New-MainConflictCommit -RepoPath $validationRepoPath -FileName "INTEGRATION_CONFLICT_SMOKE.md"
+  }
+  else {
+    $workerCommit = New-WorkerCommit -WorkerPath $worker.worktreePath
+  }
 }
 else {
   Write-Host "Assigning task to worker..." -ForegroundColor Cyan
@@ -167,7 +209,7 @@ Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/tasks/$($task.id)/transitions
   action = "review"
 } | Out-Null
 
-if ($Scenario -eq "approve-integrate") {
+if ($Scenario -in @("approve-integrate", "approve-conflict")) {
   Write-Host "Approving task with reviewer note..." -ForegroundColor Cyan
   Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/tasks/$($task.id)/review" -Body @{
     action = "approve"
@@ -196,10 +238,6 @@ if ($Scenario -eq "approve-integrate") {
 
   $integratedDetail = Invoke-JsonRequest -Method GET -Uri "$BaseUrl/api/tasks/$($task.id)"
 
-  if ($integratedDetail.task.status -ne "done") {
-    throw "Expected task status to be 'done' after integrate."
-  }
-
   if ($integratedDetail.summary.hasActiveRun) {
     throw "Expected no active run after integration."
   }
@@ -210,52 +248,103 @@ if ($Scenario -eq "approve-integrate") {
     throw "Expected TaskApproved event in recent event tail."
   }
 
-  if (-not ($eventTail -contains "TaskIntegrated")) {
-    throw "Expected TaskIntegrated event in recent event tail."
-  }
-
   if (-not $integratedResponse.integration) {
     throw "Expected integrate response to include integration summary."
-  }
-
-  if ($integratedResponse.integration.status -ne "integrated") {
-    throw "Expected integrate response status to be 'integrated'."
-  }
-
-  if ($integratedResponse.integration.targetBranch -ne "main") {
-    throw "Expected integration target branch to be 'main'."
   }
 
   if (-not $validationRepoPath) {
     throw "Expected a validation repository path for approve-integrate scenario."
   }
 
+  if ($integratedResponse.integration.targetBranch -ne "main") {
+    throw "Expected integration target branch to be 'main'."
+  }
+
   $repoHead = (Invoke-Git -Arguments @("-C", $validationRepoPath, "rev-parse", "HEAD")).Trim()
-  $mainContainsWorkerCommit = (Invoke-Git -Arguments @("-C", $validationRepoPath, "branch", "--contains", $workerCommit))
-  $integratedFilePath = Join-Path $validationRepoPath "INTEGRATION_SMOKE.md"
 
-  if (-not (Test-Path $integratedFilePath)) {
-    throw "Expected INTEGRATION_SMOKE.md to exist on the integrated main branch."
+  if ($Scenario -eq "approve-integrate") {
+    $mainContainsWorkerCommit = (Invoke-Git -Arguments @("-C", $validationRepoPath, "branch", "--contains", $workerCommit))
+    $integratedFilePath = Join-Path $validationRepoPath "INTEGRATION_SMOKE.md"
+
+    if ($integratedResponse.integration.status -ne "integrated") {
+      throw "Expected integrate response status to be 'integrated'."
+    }
+
+    if ($integratedDetail.task.status -ne "done") {
+      throw "Expected task status to be 'done' after integrate."
+    }
+
+    if (-not ($eventTail -contains "TaskIntegrated")) {
+      throw "Expected TaskIntegrated event in recent event tail."
+    }
+
+    if (-not (Test-Path $integratedFilePath)) {
+      throw "Expected INTEGRATION_SMOKE.md to exist on the integrated main branch."
+    }
+
+    if ($repoHead -ne $integratedResponse.integration.headSha) {
+      throw "Expected repository HEAD to match the integrate response head SHA."
+    }
+
+    if ($mainContainsWorkerCommit -notmatch "main") {
+      throw "Expected main to contain the worker commit after integration."
+    }
+
+    Write-Host "Review queue smoke test passed." -ForegroundColor Green
+    Write-Host "Scenario:          $Scenario"
+    Write-Host "Task ID:           $($task.id)"
+    Write-Host "Worker ID:         $($worker.id)"
+    Write-Host "Review State:      $($approvedDetail.summary.reviewState)"
+    Write-Host "Final Task Status: $($integratedDetail.task.status)"
+    Write-Host "Repo Head:         $repoHead"
+    Write-Host "Worker Commit:     $workerCommit"
+    Write-Host "Reviewer Note:     $($noteArtifact.pathOrText)"
+    Write-Host "Recent Events:     $($eventTail -join ', ')"
   }
+  else {
+    $allEventTypes = $integratedDetail.events | ForEach-Object { $_.type }
 
-  if ($repoHead -ne $integratedResponse.integration.headSha) {
-    throw "Expected repository HEAD to match the integrate response head SHA."
+    if ($integratedResponse.integration.status -ne "conflicted") {
+      throw "Expected integrate response status to be 'conflicted'."
+    }
+
+    if ($integratedDetail.task.status -ne "review") {
+      throw "Expected task status to remain 'review' after conflicted integrate."
+    }
+
+    if ($integratedDetail.summary.reviewState -ne "conflicted") {
+      throw "Expected reviewState to be 'conflicted' after conflicted integrate."
+    }
+
+    if (-not ($allEventTypes -contains "TaskIntegrationConflicted")) {
+      throw "Expected TaskIntegrationConflicted event in task event history."
+    }
+
+    if (-not ($eventTail -contains "TaskIntegrationConflicted")) {
+      throw "Expected TaskIntegrationConflicted event in recent event tail."
+    }
+
+    if ($repoHead -ne $mainConflictCommit) {
+      throw "Expected repository HEAD to remain on the main conflict commit after failed integration."
+    }
+
+    if ($integratedResponse.integration.conflicts -notcontains "INTEGRATION_CONFLICT_SMOKE.md") {
+      throw "Expected conflict summary to include INTEGRATION_CONFLICT_SMOKE.md."
+    }
+
+    Write-Host "Review queue smoke test passed." -ForegroundColor Green
+    Write-Host "Scenario:          $Scenario"
+    Write-Host "Task ID:           $($task.id)"
+    Write-Host "Worker ID:         $($worker.id)"
+    Write-Host "Review State:      $($integratedDetail.summary.reviewState)"
+    Write-Host "Final Task Status: $($integratedDetail.task.status)"
+    Write-Host "Repo Head:         $repoHead"
+    Write-Host "Worker Commit:     $workerCommit"
+    Write-Host "Main Commit:       $mainConflictCommit"
+    Write-Host "Conflicts:         $($integratedResponse.integration.conflicts -join ', ')"
+    Write-Host "Reviewer Note:     $($noteArtifact.pathOrText)"
+    Write-Host "Recent Events:     $($eventTail -join ', ')"
   }
-
-  if ($mainContainsWorkerCommit -notmatch "main") {
-    throw "Expected main to contain the worker commit after integration."
-  }
-
-  Write-Host "Review queue smoke test passed." -ForegroundColor Green
-  Write-Host "Scenario:          $Scenario"
-  Write-Host "Task ID:           $($task.id)"
-  Write-Host "Worker ID:         $($worker.id)"
-  Write-Host "Review State:      $($approvedDetail.summary.reviewState)"
-  Write-Host "Final Task Status: $($integratedDetail.task.status)"
-  Write-Host "Repo Head:         $repoHead"
-  Write-Host "Worker Commit:     $workerCommit"
-  Write-Host "Reviewer Note:     $($noteArtifact.pathOrText)"
-  Write-Host "Recent Events:     $($eventTail -join ', ')"
 }
 else {
   Write-Host "Requesting changes with reviewer note..." -ForegroundColor Cyan

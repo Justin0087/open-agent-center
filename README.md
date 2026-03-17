@@ -35,6 +35,7 @@ The repository now contains a minimal TypeScript controller service with:
 - in-memory domain model for projects, workers, tasks, runs, artifacts, and events
 - same-origin validation dashboard served by the controller
 - dashboard operator controls for task creation, assignment, worker provisioning, launch, heartbeat, and branch sync
+- project-aware task and worker binding so assignments stay inside a single repository context
 - a VS Code window launcher using the `code` CLI
 - an application layer for orchestration use cases
 - a git worktree provisioning service for new workers
@@ -105,7 +106,7 @@ http://127.0.0.1:4317/dashboard
 
 The root path redirects to `/dashboard` for convenience.
 
-The dashboard now supports the main operator loop directly in the browser: create tasks, provision workers, assign queued work, launch worker windows, send heartbeat updates, and trigger branch sync back to the repository default branch.
+The dashboard now supports the main operator loop directly in the browser: create tasks, provision workers, assign queued work, launch worker windows, send heartbeat updates, and trigger branch sync back to the repository default branch. Tasks can optionally be bound to a project, and worktree-backed workers are automatically bound to their source project so cross-project assignment mistakes are rejected.
 
 The next operator slice is also available through the same dashboard task table: unassign active work, mark tasks blocked, move tasks into review, complete them, or cancel them without leaving the page.
 
@@ -137,6 +138,12 @@ Run a local smoke check for the request-changes and reassignment flow:
 npm run smoke:review:changes
 ```
 
+Run a local smoke check for the real integration conflict flow:
+
+```bash
+npm run smoke:review:conflict
+```
+
 The smoke script assumes the controller is already running on `http://127.0.0.1:4317` and uses the current repository root as the registered project path. By default it leaves the generated branch and worktree in place for inspection. To clean up immediately, run:
 
 ```powershell
@@ -146,6 +153,8 @@ pwsh -File scripts/smoke-provision-worktree.ps1 -Cleanup
 The review smoke script also assumes the controller is already running on `http://127.0.0.1:4317`. By default it now validates a real `assign -> review -> approve(notes) -> integrate` flow against an isolated temporary local clone: it provisions a worktree-backed worker, creates a real commit on the worker branch, integrates it into the registered project's `main`, and confirms the resulting repository `HEAD` and file content changed as expected.
 
 `npm run smoke:review:changes` runs the alternate scenario: `assign -> review -> request_changes(notes) -> queued -> reassign -> review`. This confirms the task is returned to the queue, released from its first worker, then successfully reassigned and resubmitted for review.
+
+`npm run smoke:review:conflict` runs the real merge-conflict scenario: it creates conflicting commits on the worker branch and `main`, attempts `integrate`, then confirms the task stays in `review`, the integration result is `conflicted`, and the repository `HEAD` remains on the pre-existing `main` commit.
 
 Example flow:
 
@@ -169,7 +178,7 @@ Example worker creation:
 ```bash
 curl -X POST http://localhost:4317/api/workers \
 	-H "Content-Type: application/json" \
-	-d "{\"name\":\"worker-1\",\"worktreePath\":\"C:/repo/.worktrees/worker-1\",\"assignedBranch\":\"task/worker-1\"}"
+	-d "{\"name\":\"worker-1\",\"projectId\":\"<project-id>\",\"worktreePath\":\"C:/repo/.worktrees/worker-1\",\"assignedBranch\":\"task/worker-1\"}"
 ```
 
 Example task creation:
@@ -177,7 +186,7 @@ Example task creation:
 ```bash
 curl -X POST http://localhost:4317/api/tasks \
 	-H "Content-Type: application/json" \
-	-d "{\"title\":\"Build worker board\",\"description\":\"Implement worker status grid\",\"priority\":\"high\"}"
+	-d "{\"title\":\"Build worker board\",\"description\":\"Implement worker status grid\",\"priority\":\"high\",\"projectId\":\"<project-id>\"}"
 ```
 
 Example worktree-backed worker creation:
@@ -204,6 +213,8 @@ curl http://localhost:4317/api/workers/<worker-id>/diff
 
 `GET /api/workers` now returns board-oriented live fields for each worker, including:
 
+- `projectId`: the repository context bound to the worker, if any
+- `projectName`: the bound project name, when available
 - `changedFileCount`: current modified or untracked file count from the worktree
 - `hasChanges`: whether the worker currently has local changes
 - `heartbeatAgeMs`: how old the latest worker heartbeat is

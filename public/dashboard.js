@@ -31,6 +31,7 @@ const elements = {
   createTaskForm: document.querySelector("#create-task-form"),
   provisionWorkerForm: document.querySelector("#provision-worker-form"),
   assignTaskForm: document.querySelector("#assign-task-form"),
+  taskProjectSelect: document.querySelector("#task-project-select"),
   taskTitleInput: document.querySelector("#task-title-input"),
   taskDescriptionInput: document.querySelector("#task-description-input"),
   taskPriorityInput: document.querySelector("#task-priority-input"),
@@ -122,7 +123,7 @@ function renderSnapshot(snapshot, workerBoard) {
   renderActionForms(snapshot, workerBoard.items);
   renderProjects(snapshot.projects);
   renderWorkers(workerBoard.items);
-  renderTasks(snapshot.tasks, workerBoard.items);
+  renderTasks(snapshot.tasks, workerBoard.items, snapshot.projects);
   renderReviewQueue(snapshot);
   renderEvents(snapshot.events);
 }
@@ -391,16 +392,16 @@ function createIntegrationFact(label, value) {
 
 function renderActionForms(snapshot, workers) {
   const assignableTasks = getAssignableTasks(snapshot.tasks);
-  const availableWorkers = getAvailableWorkers(workers);
 
+  renderTaskProjectOptions(snapshot.projects);
   renderProjectOptions(snapshot.projects);
   renderProvisionTaskOptions(assignableTasks);
-  renderAssignmentTaskOptions(assignableTasks);
-  renderAssignmentWorkerOptions(availableWorkers);
+  renderAssignmentTaskOptions(assignableTasks, snapshot.projects);
+  renderAssignmentWorkerOptions(getAssignableWorkersForSelectedTask(assignableTasks, workers));
 
   actionAvailability = {
     disableProvision: snapshot.projects.length === 0,
-    disableAssign: assignableTasks.length === 0 || availableWorkers.length === 0,
+    disableAssign: assignableTasks.length === 0 || getAssignableWorkersForSelectedTask(assignableTasks, workers).length === 0,
   };
 
   updateActionDisabledState();
@@ -454,10 +455,11 @@ function renderWorkers(workers) {
   renderTableBody(
     elements.workersBody,
     workers,
-    10,
+    11,
     "No workers exist yet. Provision one through the controller to validate worktree orchestration.",
     (worker) => [
       worker.workerName,
+      worker.projectName ?? worker.projectId ?? "Unbound",
       statusBadge(worker.status),
       worker.taskTitle ?? worker.taskId ?? "Unassigned",
       asMono(worker.branch),
@@ -511,18 +513,20 @@ function renderWorkerInsights(workers) {
   }));
 }
 
-function renderTasks(tasks, workers) {
+function renderTasks(tasks, workers, projects) {
   const workerMap = new Map(workers.map((worker) => [worker.workerId, worker]));
+  const projectMap = new Map(projects.map((project) => [project.id, project.name]));
 
   renderTableBody(
     elements.tasksBody,
     tasks,
-    7,
+    8,
     "No tasks exist yet. Create a task to validate assignment and dashboard refresh.",
     (task) => {
       const assignedWorker = task.assignedWorkerId ? workerMap.get(task.assignedWorkerId) : undefined;
       return [
         task.title,
+        task.projectId ? projectMap.get(task.projectId) ?? task.projectId : "Unbound",
         statusBadge(task.status),
         statusBadge(task.priority),
         assignedWorker ? assignedWorker.workerName : task.assignedWorkerId ?? "Unassigned",
@@ -598,6 +602,24 @@ function createEmptyState(message) {
   return box;
 }
 
+function renderTaskProjectOptions(projects) {
+  const previousValue = elements.taskProjectSelect.value;
+  const emptyOption = document.createElement("option");
+  emptyOption.value = "";
+  emptyOption.textContent = "No project binding";
+
+  const options = projects.map((project) => {
+    const option = document.createElement("option");
+    option.value = project.id;
+    option.textContent = `${project.name} (${project.defaultBranch})`;
+    return option;
+  });
+
+  elements.taskProjectSelect.replaceChildren(emptyOption, ...options);
+  const stillExists = projects.some((project) => project.id === previousValue);
+  elements.taskProjectSelect.value = stillExists ? previousValue : "";
+}
+
 function renderProjectOptions(projects) {
   const previousValue = elements.projectSelect.value;
   const options = projects.map((project) => {
@@ -622,12 +644,15 @@ function renderProjectOptions(projects) {
 }
 
 function renderProvisionTaskOptions(tasks) {
+  const projectId = elements.projectSelect.value;
   const previousValue = elements.taskSelect.value;
   const emptyOption = document.createElement("option");
   emptyOption.value = "";
   emptyOption.textContent = "No task attached";
 
-  const options = tasks.map((task) => {
+  const compatibleTasks = tasks.filter((task) => task.projectId === projectId);
+
+  const options = compatibleTasks.map((task) => {
     const option = document.createElement("option");
     option.value = task.id;
     option.textContent = `${task.title} (${humanize(task.status)})`;
@@ -635,12 +660,13 @@ function renderProvisionTaskOptions(tasks) {
   });
 
   elements.taskSelect.replaceChildren(emptyOption, ...options);
-  const stillExists = tasks.some((task) => task.id === previousValue);
+  const stillExists = compatibleTasks.some((task) => task.id === previousValue);
   elements.taskSelect.value = stillExists ? previousValue : "";
 }
 
-function renderAssignmentTaskOptions(tasks) {
+function renderAssignmentTaskOptions(tasks, projects) {
   const previousValue = elements.assignTaskSelect.value;
+  const projectMap = new Map(projects.map((project) => [project.id, project.name]));
 
   if (tasks.length === 0) {
     const option = document.createElement("option");
@@ -654,7 +680,8 @@ function renderAssignmentTaskOptions(tasks) {
   const options = tasks.map((task) => {
     const option = document.createElement("option");
     option.value = task.id;
-    option.textContent = `${task.title} (${humanize(task.status)})`;
+    const projectLabel = task.projectId ? projectMap.get(task.projectId) ?? task.projectId : "unbound";
+    option.textContent = `${task.title} (${projectLabel}, ${humanize(task.status)})`;
     return option;
   });
 
@@ -669,7 +696,7 @@ function renderAssignmentWorkerOptions(workers) {
   if (workers.length === 0) {
     const option = document.createElement("option");
     option.value = "";
-    option.textContent = "No available workers";
+    option.textContent = "No compatible workers";
     elements.assignWorkerSelect.replaceChildren(option);
     elements.assignWorkerSelect.value = "";
     return;
@@ -678,7 +705,8 @@ function renderAssignmentWorkerOptions(workers) {
   const options = workers.map((worker) => {
     const option = document.createElement("option");
     option.value = worker.workerId;
-    option.textContent = `${worker.workerName} (${humanize(worker.status)})`;
+    const projectLabel = worker.projectName ?? worker.projectId ?? "unbound";
+    option.textContent = `${worker.workerName} (${projectLabel}, ${humanize(worker.status)})`;
     return option;
   });
 
@@ -766,6 +794,14 @@ function bindActions() {
     void submitCreateTask();
   });
 
+  elements.projectSelect.addEventListener("change", () => {
+    syncProvisionTaskOptions();
+  });
+
+  elements.assignTaskSelect.addEventListener("change", () => {
+    syncAssignmentWorkerOptions();
+  });
+
   elements.provisionWorkerForm.addEventListener("submit", (event) => {
     event.preventDefault();
     void submitProvisionWorker();
@@ -781,6 +817,7 @@ async function submitCreateTask() {
   const title = elements.taskTitleInput.value.trim();
   const description = elements.taskDescriptionInput.value.trim();
   const priority = elements.taskPriorityInput.value;
+  const projectId = elements.taskProjectSelect.value;
 
   if (!title || !description) {
     showError("Task title and description are required.");
@@ -793,13 +830,14 @@ async function submitCreateTask() {
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, description, priority }),
+      body: JSON.stringify({ title, description, priority, ...(projectId ? { projectId } : {}) }),
     },
     `Task ${title} created.`,
   );
 
   elements.createTaskForm.reset();
   elements.taskPriorityInput.value = "medium";
+  elements.taskProjectSelect.value = "";
 }
 
 async function submitProvisionWorker() {
@@ -947,9 +985,9 @@ function renderTaskActions(task, workers) {
     ]);
   }
 
-  const availableWorkers = getAvailableWorkers(workers);
+  const availableWorkers = getCompatibleAvailableWorkers(task, workers);
   if (availableWorkers.length === 0 && task.status !== "blocked") {
-    return textSpan("No available workers", "action-note");
+    return textSpan("No compatible workers", "action-note");
   }
 
   if (task.status === "blocked" && availableWorkers.length === 0) {
@@ -1003,6 +1041,43 @@ function getAssignableTasks(tasks) {
 
 function getAvailableWorkers(workers) {
   return workers.filter((worker) => !worker.taskId);
+}
+
+function areTaskAndWorkerCompatible(task, worker) {
+  if (!task.projectId && !worker.projectId) {
+    return true;
+  }
+
+  return Boolean(task.projectId && worker.projectId && task.projectId === worker.projectId);
+}
+
+function getCompatibleAvailableWorkers(task, workers) {
+  return getAvailableWorkers(workers).filter((worker) => areTaskAndWorkerCompatible(task, worker));
+}
+
+function getAssignableWorkersForSelectedTask(tasks, workers) {
+  const selectedTaskId = elements.assignTaskSelect.value;
+  const selectedTask = tasks.find((task) => task.id === selectedTaskId) ?? tasks[0];
+
+  if (!selectedTask) {
+    return [];
+  }
+
+  return getCompatibleAvailableWorkers(selectedTask, workers);
+}
+
+function syncProvisionTaskOptions() {
+  renderProvisionTaskOptions(getAssignableTasks(lastSnapshot.tasks));
+}
+
+function syncAssignmentWorkerOptions() {
+  const assignableTasks = getAssignableTasks(lastSnapshot.tasks);
+  renderAssignmentWorkerOptions(getAssignableWorkersForSelectedTask(assignableTasks, lastWorkerBoard.items));
+  actionAvailability = {
+    ...actionAvailability,
+    disableAssign: assignableTasks.length === 0 || getAssignableWorkersForSelectedTask(assignableTasks, lastWorkerBoard.items).length === 0,
+  };
+  updateActionDisabledState();
 }
 
 function createTaskLifecycleActions(task, actions) {

@@ -42,6 +42,7 @@ export interface Worker {
   id: string;
   name: string;
   status: WorkerStatus;
+  projectId?: string;
   worktreePath: string;
   assignedBranch: string;
   assignedTaskId?: string;
@@ -55,6 +56,7 @@ export interface Task {
   title: string;
   description: string;
   priority: Priority;
+  projectId?: string;
   status: TaskStatus;
   targetPaths: string[];
   acceptanceChecks: string[];
@@ -107,6 +109,7 @@ export interface RegisterProjectInput {
 
 export interface CreateWorkerInput {
   name: string;
+  projectId?: string;
   worktreePath: string;
   assignedBranch: string;
 }
@@ -114,6 +117,7 @@ export interface CreateWorkerInput {
 export interface CreateTaskInput {
   title: string;
   description: string;
+  projectId?: string;
   priority?: Priority;
   targetPaths?: string[];
   acceptanceChecks?: string[];
@@ -213,6 +217,8 @@ export interface WorkerSummary {
   workerId: string;
   workerName: string;
   status: WorkerStatus;
+  projectId?: string;
+  projectName?: string;
   taskId?: string;
   taskTitle?: string;
   branch: string;
@@ -258,6 +264,7 @@ export interface TaskAssignedWorkerSummary {
   workerId: string;
   workerName: string;
   status: WorkerStatus;
+  projectId?: string;
   branch: string;
   worktreePath: string;
   lastSeenAt: string;

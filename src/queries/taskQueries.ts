@@ -86,6 +86,7 @@ export function buildTaskDetail(state: AppState, taskId: string): TaskDetail | u
             workerId: assignedWorker.id,
             workerName: assignedWorker.name,
             status: deriveWorkerStatus(assignedWorker.status, assignedWorker.lastSeenAt, now),
+            ...(assignedWorker.projectId ? { projectId: assignedWorker.projectId } : {}),
             branch: assignedWorker.assignedBranch,
             worktreePath: assignedWorker.worktreePath,
             lastSeenAt: assignedWorker.lastSeenAt,
