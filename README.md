@@ -143,7 +143,7 @@ The smoke script assumes the controller is already running on `http://127.0.0.1:
 pwsh -File scripts/smoke-provision-worktree.ps1 -Cleanup
 ```
 
-The review smoke script also assumes the controller is already running on `http://127.0.0.1:4317`. By default it validates `assign -> review -> approve(notes) -> integrate` and confirms that the reviewer note is persisted as a `note` artifact.
+The review smoke script also assumes the controller is already running on `http://127.0.0.1:4317`. By default it now validates a real `assign -> review -> approve(notes) -> integrate` flow against an isolated temporary local clone: it provisions a worktree-backed worker, creates a real commit on the worker branch, integrates it into the registered project's `main`, and confirms the resulting repository `HEAD` and file content changed as expected.
 
 `npm run smoke:review:changes` runs the alternate scenario: `assign -> review -> request_changes(notes) -> queued -> reassign -> review`. This confirms the task is returned to the queue, released from its first worker, then successfully reassigned and resubmitted for review.
 

@@ -2,6 +2,8 @@ param(
   [string]$BaseUrl = "http://127.0.0.1:4317",
   [ValidateSet("approve-integrate", "request-changes-reassign")]
   [string]$Scenario = "approve-integrate",
+  [string]$SourceRepoPath = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
+  [string]$TempRoot = (Join-Path $env:TEMP "open-agent-center-review-smoke"),
   [string]$WorkerName = "smoke-review-worker",
   [string]$ReassignWorkerName = "smoke-review-worker-reassign",
   [string]$TaskTitle = "Smoke test review queue",
@@ -36,6 +38,64 @@ function Invoke-JsonRequest {
   return Invoke-RestMethod @requestArgs
 }
 
+function Invoke-Git {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string[]]$Arguments
+  )
+
+  $output = & git @Arguments 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    throw "git $($Arguments -join ' ') failed: $output"
+  }
+
+  return ($output | Out-String).Trim()
+}
+
+function New-IntegrationValidationRepo {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$SourceRepoPath,
+
+    [Parameter(Mandatory = $true)]
+    [string]$TempRoot
+  )
+
+  if (Test-Path $TempRoot) {
+    Remove-Item -Recurse -Force $TempRoot
+  }
+
+  New-Item -ItemType Directory -Path $TempRoot | Out-Null
+  $repoPath = Join-Path $TempRoot "repo"
+
+  Invoke-Git -Arguments @("clone", "--quiet", "--branch", "main", "--single-branch", $SourceRepoPath, $repoPath) | Out-Null
+  Invoke-Git -Arguments @("-C", $repoPath, "config", "user.name", "Open Agent Center Smoke") | Out-Null
+  Invoke-Git -Arguments @("-C", $repoPath, "config", "user.email", "open-agent-center-smoke@example.com") | Out-Null
+
+  return $repoPath
+}
+
+function New-WorkerCommit {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$WorkerPath
+  )
+
+  $targetFile = Join-Path $WorkerPath "INTEGRATION_SMOKE.md"
+  @(
+    "# Integration Smoke",
+    "",
+    "This file was created by the real approve -> integrate validation."
+  ) | Set-Content -Path $targetFile -Encoding utf8
+
+  Invoke-Git -Arguments @("-C", $WorkerPath, "config", "user.name", "Open Agent Center Smoke") | Out-Null
+  Invoke-Git -Arguments @("-C", $WorkerPath, "config", "user.email", "open-agent-center-smoke@example.com") | Out-Null
+  Invoke-Git -Arguments @("-C", $WorkerPath, "add", "INTEGRATION_SMOKE.md") | Out-Null
+  Invoke-Git -Arguments @("-C", $WorkerPath, "commit", "-m", "Add integration smoke artifact") | Out-Null
+
+  return (Invoke-Git -Arguments @("-C", $WorkerPath, "rev-parse", "HEAD")).Trim()
+}
+
 Write-Host "Checking controller health at $BaseUrl ..." -ForegroundColor Cyan
 $health = Invoke-JsonRequest -Method GET -Uri "$BaseUrl/health"
 
@@ -43,11 +103,28 @@ if (-not $health.ok) {
   throw "Controller health check failed."
 }
 
-Write-Host "Creating smoke review worker..." -ForegroundColor Cyan
-$worker = Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/workers" -Body @{
-  name = $WorkerName
-  worktreePath = "C:/temp/$WorkerName"
-  assignedBranch = "task/$WorkerName"
+$worker = $null
+$validationRepoPath = $null
+$workerCommit = $null
+
+if ($Scenario -eq "approve-integrate") {
+  Write-Host "Preparing isolated validation repository..." -ForegroundColor Cyan
+  $validationRepoPath = New-IntegrationValidationRepo -SourceRepoPath $SourceRepoPath -TempRoot $TempRoot
+
+  Write-Host "Registering smoke review project..." -ForegroundColor Cyan
+  $project = Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/projects" -Body @{
+    name = "integration-smoke-project"
+    repoPath = $validationRepoPath
+    defaultBranch = "main"
+  }
+}
+else {
+  Write-Host "Creating smoke review worker..." -ForegroundColor Cyan
+  $worker = Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/workers" -Body @{
+    name = $WorkerName
+    worktreePath = "C:/temp/$WorkerName"
+    assignedBranch = "task/$WorkerName"
+  }
 }
 
 $reassignWorker = $null
@@ -67,11 +144,23 @@ $task = Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/tasks" -Body @{
   priority = "high"
 }
 
-Write-Host "Assigning task to worker..." -ForegroundColor Cyan
-Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/assignments" -Body @{
-  taskId = $task.id
-  workerId = $worker.id
-} | Out-Null
+if ($Scenario -eq "approve-integrate") {
+  Write-Host "Provisioning worktree-backed worker..." -ForegroundColor Cyan
+  $provisioned = Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/projects/$($project.id)/worktrees" -Body @{
+    workerName = $WorkerName
+    taskId = $task.id
+    branchBase = "integration-smoke"
+  }
+  $worker = $provisioned.worker
+  $workerCommit = New-WorkerCommit -WorkerPath $worker.worktreePath
+}
+else {
+  Write-Host "Assigning task to worker..." -ForegroundColor Cyan
+  Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/assignments" -Body @{
+    taskId = $task.id
+    workerId = $worker.id
+  } | Out-Null
+}
 
 Write-Host "Moving task into review..." -ForegroundColor Cyan
 Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/tasks/$($task.id)/transitions" -Body @{
@@ -101,9 +190,9 @@ if ($Scenario -eq "approve-integrate") {
   }
 
   Write-Host "Integrating task..." -ForegroundColor Cyan
-  Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/tasks/$($task.id)/review" -Body @{
+  $integratedResponse = Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/tasks/$($task.id)/review" -Body @{
     action = "integrate"
-  } | Out-Null
+  }
 
   $integratedDetail = Invoke-JsonRequest -Method GET -Uri "$BaseUrl/api/tasks/$($task.id)"
 
@@ -125,12 +214,46 @@ if ($Scenario -eq "approve-integrate") {
     throw "Expected TaskIntegrated event in recent event tail."
   }
 
+  if (-not $integratedResponse.integration) {
+    throw "Expected integrate response to include integration summary."
+  }
+
+  if ($integratedResponse.integration.status -ne "integrated") {
+    throw "Expected integrate response status to be 'integrated'."
+  }
+
+  if ($integratedResponse.integration.targetBranch -ne "main") {
+    throw "Expected integration target branch to be 'main'."
+  }
+
+  if (-not $validationRepoPath) {
+    throw "Expected a validation repository path for approve-integrate scenario."
+  }
+
+  $repoHead = (Invoke-Git -Arguments @("-C", $validationRepoPath, "rev-parse", "HEAD")).Trim()
+  $mainContainsWorkerCommit = (Invoke-Git -Arguments @("-C", $validationRepoPath, "branch", "--contains", $workerCommit))
+  $integratedFilePath = Join-Path $validationRepoPath "INTEGRATION_SMOKE.md"
+
+  if (-not (Test-Path $integratedFilePath)) {
+    throw "Expected INTEGRATION_SMOKE.md to exist on the integrated main branch."
+  }
+
+  if ($repoHead -ne $integratedResponse.integration.headSha) {
+    throw "Expected repository HEAD to match the integrate response head SHA."
+  }
+
+  if ($mainContainsWorkerCommit -notmatch "main") {
+    throw "Expected main to contain the worker commit after integration."
+  }
+
   Write-Host "Review queue smoke test passed." -ForegroundColor Green
   Write-Host "Scenario:          $Scenario"
   Write-Host "Task ID:           $($task.id)"
   Write-Host "Worker ID:         $($worker.id)"
   Write-Host "Review State:      $($approvedDetail.summary.reviewState)"
   Write-Host "Final Task Status: $($integratedDetail.task.status)"
+  Write-Host "Repo Head:         $repoHead"
+  Write-Host "Worker Commit:     $workerCommit"
   Write-Host "Reviewer Note:     $($noteArtifact.pathOrText)"
   Write-Host "Recent Events:     $($eventTail -join ', ')"
 }
