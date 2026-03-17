@@ -1,10 +1,17 @@
 import { deriveWorkerStatus, getHeartbeatAgeMs, isWorkerStale } from "../domain/workerStatus.js";
 import { AppState, TaskDetail } from "../domain/types.js";
 
-function deriveReviewState(events: TaskDetail["events"]): "pending" | "approved" | undefined {
+function deriveReviewState(events: TaskDetail["events"]): "pending" | "approved" | "blocked" | "conflicted" | undefined {
   const lastReviewEvent = [...events]
     .reverse()
-    .find((entry) => ["TaskApproved", "TaskChangesRequested", "TaskIntegrated", "TaskMovedToReview"].includes(entry.type));
+    .find((entry) => [
+      "TaskApproved",
+      "TaskChangesRequested",
+      "TaskIntegrated",
+      "TaskMovedToReview",
+      "TaskIntegrationBlocked",
+      "TaskIntegrationConflicted",
+    ].includes(entry.type));
 
   if (!lastReviewEvent) {
     return undefined;
@@ -16,6 +23,14 @@ function deriveReviewState(events: TaskDetail["events"]): "pending" | "approved"
 
   if (lastReviewEvent.type === "TaskMovedToReview") {
     return "pending";
+  }
+
+  if (lastReviewEvent.type === "TaskIntegrationBlocked") {
+    return "blocked";
+  }
+
+  if (lastReviewEvent.type === "TaskIntegrationConflicted") {
+    return "conflicted";
   }
 
   return undefined;

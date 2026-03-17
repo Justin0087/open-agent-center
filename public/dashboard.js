@@ -212,6 +212,7 @@ function renderReviewDetail(detail, diff) {
   const wrapper = document.createElement("article");
   wrapper.className = "review-card";
   const currentNotes = reviewNotesByTaskId[detail.task.id] ?? "";
+  const latestIntegration = getLatestIntegration(detail.events);
 
   const title = document.createElement("h3");
   title.className = "review-card__title";
@@ -260,6 +261,10 @@ function renderReviewDetail(detail, diff) {
   notesSection.append(notesTitle, notesHelp, notesInput);
 
   wrapper.append(title, description, meta, notesSection, actions);
+
+  if (latestIntegration) {
+    wrapper.append(renderIntegrationSection(latestIntegration));
+  }
 
   if (diff) {
     const diffSection = document.createElement("section");
@@ -320,6 +325,68 @@ function renderReviewDetail(detail, diff) {
   wrapper.append(artifactsSection);
 
   elements.reviewDetail.replaceChildren(wrapper);
+}
+
+function getLatestIntegration(events) {
+  const integrationEvent = [...events]
+    .reverse()
+    .find((event) => ["TaskIntegrated", "TaskIntegrationBlocked", "TaskIntegrationConflicted"].includes(event.type));
+
+  if (!integrationEvent || typeof integrationEvent.payload !== "object" || integrationEvent.payload === null) {
+    return undefined;
+  }
+
+  return integrationEvent.payload.integration;
+}
+
+function renderIntegrationSection(integration) {
+  const section = document.createElement("section");
+  section.className = "review-detail__section";
+
+  const title = document.createElement("h3");
+  title.textContent = "Latest Integration Attempt";
+
+  const meta = document.createElement("div");
+  meta.className = "review-detail__meta";
+  meta.append(
+    statusBadge(integration.status),
+    textSpan(`Target: ${integration.targetBranch}`, "mono"),
+    textSpan(`Source: ${integration.sourceBranch}`, "mono"),
+  );
+
+  const summary = document.createElement("p");
+  summary.textContent = integration.summary;
+
+  const facts = document.createElement("div");
+  facts.className = "review-detail__artifacts";
+  facts.append(
+    createIntegrationFact("Repository", integration.repoPath),
+    createIntegrationFact("Head", integration.headSha),
+    createIntegrationFact("Generated", formatDateTime(integration.generatedAt)),
+  );
+
+  section.append(title, meta, summary, facts);
+
+  if (Array.isArray(integration.conflicts) && integration.conflicts.length > 0) {
+    const conflicts = document.createElement("div");
+    conflicts.className = "review-detail__files";
+    conflicts.append(...integration.conflicts.map((filePath) => {
+      const item = document.createElement("article");
+      item.className = "review-file";
+      item.append(textSpan(filePath, "mono"));
+      return item;
+    }));
+    section.append(conflicts);
+  }
+
+  return section;
+}
+
+function createIntegrationFact(label, value) {
+  const item = document.createElement("article");
+  item.className = "review-artifact";
+  item.append(textSpan(label), textSpan(value, "mono"));
+  return item;
 }
 
 function renderActionForms(snapshot, workers) {
@@ -807,13 +874,17 @@ async function mutateJson(url, options, successMessage) {
       throw new Error(message);
     }
 
+    const responseBody = await safeReadJson(response);
+
     await refresh();
     showError("");
-    announce(successMessage);
+    announce(typeof successMessage === "function" ? successMessage(responseBody) : successMessage);
+    return responseBody;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown mutation failure.";
     showError(`Action failed: ${message}`);
     announce(`Action failed. ${message}`);
+    return undefined;
   } finally {
     setMutationPending(false);
   }
@@ -962,17 +1033,17 @@ function createTaskTransitionButton(task, label, action, successMessage) {
 function createReviewActionButton(taskId, label, action, successMessage, getNotes = () => "") {
   return createActionButton(label, async () => {
     const notes = getNotes().trim();
-    await mutateJson(
+    const response = await mutateJson(
       `/api/tasks/${taskId}/review`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, ...(notes ? { notes } : {}) }),
       },
-      successMessage,
+      (body) => body?.integration?.summary ?? successMessage,
     );
 
-    if (notes) {
+    if (response && notes) {
       reviewNotesByTaskId[taskId] = "";
     }
   }, false, true);

@@ -13,6 +13,7 @@ import {
   RegisterProjectInput,
   Run,
   Task,
+  TaskIntegrationSummary,
   TaskReviewInput,
   TaskReviewResult,
   TaskTransitionInput,
@@ -374,7 +375,7 @@ export class StateStore {
     };
   }
 
-  async reviewTask(taskId: string, input: TaskReviewInput): Promise<TaskReviewResult> {
+  async reviewTask(taskId: string, input: TaskReviewInput, integration?: TaskIntegrationSummary): Promise<TaskReviewResult> {
     const task = this.state.tasks.find((entry) => entry.id === taskId);
     if (!task) {
       throw new Error(`Task ${taskId} not found.`);
@@ -400,9 +401,19 @@ export class StateStore {
         break;
       }
       case "integrate": {
-        task.status = "done";
+        if (!integration) {
+          throw new Error(`Task ${task.id} integration result is required.`);
+        }
+
         task.updatedAt = timestamp;
-        eventType = "TaskIntegrated";
+        if (integration.status === "integrated") {
+          task.status = "done";
+          eventType = "TaskIntegrated";
+        } else if (integration.status === "conflicted") {
+          eventType = "TaskIntegrationConflicted";
+        } else {
+          eventType = "TaskIntegrationBlocked";
+        }
         break;
       }
       default:
@@ -420,6 +431,7 @@ export class StateStore {
       payload: {
         action: input.action,
         ...(artifact ? { artifactId: artifact.id } : {}),
+        ...(integration ? { integration } : {}),
       },
     });
 
@@ -428,6 +440,7 @@ export class StateStore {
       action: input.action,
       task: cloneState(task),
       ...(artifact ? { artifact: cloneState(artifact) } : {}),
+      ...(integration ? { integration: cloneState(integration) } : {}),
     };
   }
 
