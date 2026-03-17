@@ -261,15 +261,16 @@ Heartbeat behavior:
 
 ## Dashboard
 
-The built-in dashboard is a same-origin, read-only validation page for the current demo. It polls the existing controller APIs every few seconds and renders:
+The built-in dashboard is a same-origin operator surface for the current demo. It polls the existing controller APIs every few seconds and renders:
 
 - controller health and refresh state
 - summary cards for projects, workers, tasks, runs, artifacts, and events
 - worker status insight cards for active, blocked, offline, and stale-heartbeat counts
 - projects, workers, and tasks tables
 - a recent event timeline
+- lightweight action controls for task creation, worker provisioning, worker launch, and heartbeat updates
 
-The workers table is backed by the worker board API, so it also shows controller-derived status, heartbeat freshness, and changed-file counts without you having to inspect raw JSON manually.
+The workers table is backed by the worker board API, so it also shows controller-derived status, heartbeat freshness, and changed-file counts without you having to inspect raw JSON manually. The dashboard now also exposes small mutation controls so you can validate the main orchestration loop without switching to curl for every step.
 
 Example task detail lookup:
 
