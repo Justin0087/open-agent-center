@@ -3,12 +3,15 @@ import path from "node:path";
 
 import {
   AppState,
+  ArchiveProjectResult,
   Artifact,
   AssignTaskInput,
+  CleanupWorkerResult,
   CreateTaskInput,
   CreateWorkerInput,
   EventRecord,
   Project,
+  ProjectArchiveSummary,
   ReportedWorkerStatus,
   RegisterProjectInput,
   Run,
@@ -19,6 +22,7 @@ import {
   TaskTransitionInput,
   TaskTransitionResult,
   Worker,
+  WorkerCleanupSummary,
 } from "../domain/types.js";
 import { createId, nowIso } from "../utils/ids.js";
 
@@ -40,6 +44,21 @@ function cloneState<T>(value: T): T {
 
 export class StateStore {
   private state: AppState = cloneState(EMPTY_STATE);
+
+  private getProjectRecord(projectId: string): Project | undefined {
+    return this.state.projects.find((entry) => entry.id === projectId);
+  }
+
+  private ensureProjectAcceptsChanges(projectId: string | undefined): void {
+    if (!projectId) {
+      return;
+    }
+
+    const project = this.getProjectRecord(projectId);
+    if (project?.archivedAt) {
+      throw new Error(`Project ${project.id} is archived and cannot accept new work.`);
+    }
+  }
 
   private getActiveRunForTask(taskId: string): Run | undefined {
     return [...this.state.runs]
@@ -152,6 +171,8 @@ export class StateStore {
   }
 
   async createWorker(input: CreateWorkerInput): Promise<Worker> {
+    this.ensureProjectAcceptsChanges(input.projectId);
+
     const worker: Worker = {
       id: createId(),
       name: input.name,
@@ -175,6 +196,8 @@ export class StateStore {
   }
 
   async createTask(input: CreateTaskInput): Promise<Task> {
+    this.ensureProjectAcceptsChanges(input.projectId);
+
     const task: Task = {
       id: createId(),
       title: input.title,
@@ -209,6 +232,10 @@ export class StateStore {
 
     if (!worker) {
       throw new Error(`Worker ${input.workerId} not found.`);
+    }
+
+    if (worker.status === "archived") {
+      throw new Error(`Worker ${worker.id} is archived and cannot accept new assignments.`);
     }
 
     if (task.assignedWorkerId && task.assignedWorkerId !== worker.id) {
@@ -459,6 +486,10 @@ export class StateStore {
       throw new Error(`Worker ${workerId} not found.`);
     }
 
+    if (worker.status === "archived") {
+      throw new Error(`Worker ${workerId} is archived and cannot accept heartbeats.`);
+    }
+
     if (processId !== undefined) {
       worker.processId = processId;
     } else {
@@ -528,6 +559,75 @@ export class StateStore {
   async recordEvent(event: Omit<EventRecord, "id" | "ts">): Promise<void> {
     this.appendEvent(event);
     await this.persist();
+  }
+
+  async archiveWorker(workerId: string, cleanup: WorkerCleanupSummary): Promise<CleanupWorkerResult> {
+    const worker = this.state.workers.find((entry) => entry.id === workerId);
+
+    if (!worker) {
+      throw new Error(`Worker ${workerId} not found.`);
+    }
+
+    if (worker.status === "archived") {
+      throw new Error(`Worker ${workerId} is already archived.`);
+    }
+
+    if (worker.assignedTaskId) {
+      throw new Error(`Worker ${worker.id} cannot be archived while assigned to task ${worker.assignedTaskId}.`);
+    }
+
+    worker.status = "archived";
+    worker.archivedAt = cleanup.generatedAt;
+    worker.lastSeenAt = cleanup.generatedAt;
+    delete worker.processId;
+
+    this.appendEvent({
+      type: "WorkerArchived",
+      entityType: "worker",
+      entityId: worker.id,
+      payload: {
+        archivedAt: cleanup.generatedAt,
+      },
+    });
+    this.appendEvent({
+      type: cleanup.status === "completed" ? "WorkerCleanupCompleted" : "WorkerCleanupBlocked",
+      entityType: "worker",
+      entityId: worker.id,
+      payload: cleanup,
+    });
+
+    await this.persist();
+    return {
+      worker: cloneState(worker),
+      cleanup: cloneState(cleanup),
+    };
+  }
+
+  async archiveProject(projectId: string, archive: ProjectArchiveSummary): Promise<ArchiveProjectResult> {
+    const project = this.getProjectRecord(projectId);
+
+    if (!project) {
+      throw new Error(`Project ${projectId} not found.`);
+    }
+
+    if (project.archivedAt) {
+      throw new Error(`Project ${project.id} is already archived.`);
+    }
+
+    project.archivedAt = archive.generatedAt;
+
+    this.appendEvent({
+      type: "ProjectArchived",
+      entityType: "project",
+      entityId: project.id,
+      payload: archive,
+    });
+
+    await this.persist();
+    return {
+      project: cloneState(project),
+      archive: cloneState(archive),
+    };
   }
 
   private appendEvent(event: Omit<EventRecord, "id" | "ts">): void {

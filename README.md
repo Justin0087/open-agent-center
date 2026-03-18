@@ -69,10 +69,12 @@ Available endpoints:
 - `GET /api/tasks`
 - `GET /api/tasks/:taskId`
 - `POST /api/projects`
+- `POST /api/projects/:projectId/archive`
 - `POST /api/projects/:projectId/worktrees`
 - `POST /api/workers`
 - `POST /api/workers/:workerId/heartbeat`
 - `POST /api/workers/:workerId/sync`
+- `POST /api/workers/:workerId/cleanup`
 - `POST /api/tasks`
 - `POST /api/assignments`
 - `POST /api/tasks/:taskId/transitions`
@@ -106,7 +108,126 @@ http://127.0.0.1:4317/dashboard
 
 The root path redirects to `/dashboard` for convenience.
 
-The dashboard now supports the main operator loop directly in the browser: create tasks, provision workers, assign queued work, launch worker windows, send heartbeat updates, and trigger branch sync back to the repository default branch. Tasks can optionally be bound to a project, and worktree-backed workers are automatically bound to their source project so cross-project assignment mistakes are rejected.
+The dashboard now supports the main operator loop directly in the browser: register projects, create tasks, provision workers, assign queued work, launch worker windows, send heartbeat updates, and trigger branch sync back to the repository default branch. Tasks can optionally be bound to a project, and worktree-backed workers are automatically bound to their source project so cross-project assignment mistakes are rejected.
+
+The intended browser-first onboarding flow is: register the repository in the dashboard, provision a worktree-backed worker for that project, then create and assign tasks without dropping to `curl`.
+
+The dashboard also includes a shared project scope control for summary cards, workers, tasks, review queue, and recent events, so operators can isolate one repository without changing the action forms.
+
+Workers can now also be archived directly from the dashboard. The archive action currently removes the worker worktree by default, marks the worker record as `archived`, and blocks future assignment or heartbeat updates for that worker.
+
+Projects can now be archived through the API once they no longer have live workers or open tasks. Archived projects remain in history, but reject new tasks, workers, and worktree provisioning so repository ownership cannot silently reopen.
+
+The dashboard project table now exposes the same archive action. Archived projects stay visible with archive metadata, while project selectors for task creation and worktree provisioning only show writable projects. If an archive attempt is blocked, the project row now shows the latest blocking workers and tasks using readable names with ids as secondary detail, and those blockers can be clicked to jump to the matching worker or task row.
+
+Project identity note:
+
+- `project.id` is the real unique identifier in the current implementation.
+- `project.name` is not currently enforced as unique.
+- `repoPath` is also not currently enforced as unique.
+
+## Lifecycle
+
+The current implementation exposes three primary lifecycle surfaces: projects, workers, and tasks.
+
+Project lifecycle in the current implementation:
+
+```mermaid
+stateDiagram-v2
+	[*] --> Registered : POST /api/projects
+
+	state "Registered\narchivedAt = null" as Registered
+	state "Archived\narchivedAt != null" as Archived
+	state "Archive Blocked\noperation result only\nproject record unchanged" as ArchiveBlocked
+
+	Registered --> Archived : POST /api/projects/:projectId/archive\nno live workers\nand no open tasks
+	Registered --> ArchiveBlocked : POST /api/projects/:projectId/archive\nany worker.status != archived\nor any task.status not in {done, canceled}
+	ArchiveBlocked --> Registered : record ProjectArchiveBlocked event
+
+	Archived --> Archived : createTask/createWorker/createProjectWorktree\nrejected with PROJECT_ARCHIVED
+```
+
+Operator notes for this lifecycle:
+
+- `Registered` is the normal writable state. The project can accept new tasks, workers, and worktree provisioning.
+- `ArchiveBlocked` is not a persisted project status. It is an archive attempt result recorded as a `ProjectArchiveBlocked` event while the project itself stays registered.
+- `Archived` is terminal in v1. There is no unarchive or delete route, and new work is rejected with `PROJECT_ARCHIVED`.
+
+Worker lifecycle in the current implementation:
+
+```mermaid
+stateDiagram-v2
+	[*] --> Idle : create worker
+
+	state "Idle\nno assigned task" as Idle
+	state "Active\nassigned task in progress" as Active
+	state "Blocked\nworker-reported blocked" as Blocked
+	state "Offline\nlaunch failed or stale heartbeat" as Offline
+	state "Archived\ncleanup/archive terminal state" as Archived
+
+	Idle --> Active : assign task
+	Active --> Idle : unassign | complete
+	Active --> Blocked : heartbeat status=blocked
+	Active --> Idle : move task to review
+	Blocked --> Active : heartbeat status=active
+	Blocked --> Idle : unassign | complete | cancel
+	Idle --> Offline : launch failure
+	Active --> Offline : stale heartbeat derived status
+	Blocked --> Offline : stale heartbeat derived status
+	Offline --> Idle : heartbeat status=idle
+	Offline --> Active : heartbeat status=active
+	Offline --> Blocked : heartbeat status=blocked
+
+	Idle --> Archived : worker cleanup/archive
+	Offline --> Archived : worker cleanup/archive
+	Active --> Archived : blocked\ncleanup rejected while assigned
+	Blocked --> Archived : blocked\ncleanup rejected while assigned
+```
+
+Operator notes for this lifecycle:
+
+- `Idle`, `Active`, and `Blocked` are explicit worker states written by assignment flow or heartbeat updates.
+- `Offline` can be written directly on launch failure, and it can also be derived when a non-archived worker heartbeat becomes stale.
+- Moving a task to `review` releases the worker back to `Idle`; review belongs to the task lifecycle, not the worker lifecycle.
+- `Archived` is terminal in v1. Archived workers reject new assignment and heartbeat updates.
+
+Task lifecycle in the current implementation:
+
+```mermaid
+stateDiagram-v2
+	[*] --> Queued : create task
+
+	state "Queued\nunassigned backlog" as Queued
+	state "In Progress\nassigned to worker" as InProgress
+	state "Review\nawaiting operator decision" as Review
+	state "Blocked\nwork cannot proceed" as Blocked
+	state "Done\nterminal success" as Done
+	state "Canceled\nterminal stop" as Canceled
+
+	Queued --> InProgress : assign task
+	InProgress --> Queued : unassign
+	InProgress --> Review : move to review
+	InProgress --> Blocked : mark blocked
+	InProgress --> Done : complete
+	InProgress --> Canceled : cancel
+
+	Blocked --> InProgress : assign task
+	Blocked --> Canceled : cancel
+
+	Review --> Review : approve\nreviewState = approved
+	Review --> Queued : request changes
+	Review --> Done : integrate success
+	Review --> Review : integrate blocked/conflicted
+	Review --> Done : complete
+	Review --> Canceled : cancel
+```
+
+Operator notes for this lifecycle:
+
+- `Queued -> In Progress -> Review -> Done` is the primary happy path.
+- `approve` does not move the task out of `Review`; it records approval state and optional reviewer notes, then the task stays in review until integration or another decision happens.
+- `request changes` returns the task to `Queued`, which is why reassignment is a task transition rather than a separate review state.
+- `Blocked`, `Done`, and `Canceled` are the exit branches from the main path. `Done` and `Canceled` are terminal in v1.
 
 The next operator slice is also available through the same dashboard task table: unassign active work, mark tasks blocked, move tasks into review, complete them, or cancel them without leaving the page.
 
@@ -132,10 +253,40 @@ Type-check the test files as well:
 npm run check:test
 ```
 
-Run a local smoke check for project registration, task creation, and worktree provisioning:
+Run the unified lifecycle smoke suite for onboarding, cleanup, project archive, and review/integration flows:
+
+```bash
+npm run smoke:lifecycle
+```
+
+Run a local smoke check for the browser-first onboarding flow: project registration, worker provisioning, project-bound task creation, and assignment:
 
 ```bash
 npm run smoke:worktree
+```
+
+Run a local smoke check for successful project archive and archived-project write rejection:
+
+```bash
+npm run smoke:project-archive
+```
+
+Run a local smoke check for blocked project archive while the project still has active work:
+
+```bash
+npm run smoke:project-archive:blocked
+```
+
+Run a local smoke check for worker archive and worktree cleanup:
+
+```bash
+npm run smoke:cleanup
+```
+
+Run a local smoke check for blocked worker cleanup while the worker is still assigned:
+
+```bash
+npm run smoke:cleanup:blocked
 ```
 
 Run a local smoke check for the review queue flow:
@@ -156,11 +307,21 @@ Run a local smoke check for the real integration conflict flow:
 npm run smoke:review:conflict
 ```
 
-The smoke script assumes the controller is already running on `http://127.0.0.1:4317` and uses the current repository root as the registered project path. By default it leaves the generated branch and worktree in place for inspection. To clean up immediately, run:
+The smoke script assumes the controller is already running on `http://127.0.0.1:4317` and uses the current repository root as the registered project path. It now validates the same operator order as the dashboard: register the project, provision a worktree-backed worker, create a project-bound task, assign it, and confirm the worker/task bindings persisted. By default it leaves the generated branch and worktree in place for inspection. To clean up immediately, run:
 
 ```powershell
 pwsh -File scripts/smoke-provision-worktree.ps1 -Cleanup
 ```
+
+`npm run smoke:lifecycle` is the umbrella entry point for the current operational lifecycle slices. It runs onboarding, worker cleanup success, worker cleanup blocked, project archive success, project archive blocked, review approve/integrate, review request-changes/reassign, and review conflict in sequence against the same controller.
+
+`npm run smoke:cleanup` also assumes the controller is already running on `http://127.0.0.1:4317`. It provisions a worktree-backed worker, archives that worker through `POST /api/workers/:workerId/cleanup`, then confirms the worker is reported as `archived` and the worktree path no longer exists on disk.
+
+`npm run smoke:project-archive` assumes the controller is already running on `http://127.0.0.1:4317`. It archives a clean project, confirms the project is persisted as archived, then verifies that task creation, worker creation, and worktree provisioning are all rejected with `PROJECT_ARCHIVED`.
+
+`npm run smoke:project-archive:blocked` exercises the guard path: it creates a project-bound worker and task, assigns them, attempts project archive, expects HTTP `409` with `PROJECT_ARCHIVE_BLOCKED`, and confirms the latest `ProjectArchiveBlocked` event references the same blocker ids that the dashboard resolves back to readable worker and task names.
+
+`npm run smoke:cleanup:blocked` exercises the guard path: it provisions a worker, assigns a project-bound task to that worker, attempts cleanup, expects HTTP `409` with `WORKER_CLEANUP_BLOCKED`, and confirms the worktree and assignment both remain intact.
 
 The review smoke script also assumes the controller is already running on `http://127.0.0.1:4317`. By default it now validates a real `assign -> review -> approve(notes) -> integrate` flow against an isolated temporary local clone: it provisions a worktree-backed worker, creates a real commit on the worker branch, integrates it into the registered project's `main`, and confirms the resulting repository `HEAD` and file content changed as expected.
 
@@ -207,6 +368,12 @@ Example worktree-backed worker creation:
 curl -X POST http://localhost:4317/api/projects/<project-id>/worktrees \
 	-H "Content-Type: application/json" \
 	-d "{\"workerName\":\"copilot-1\",\"branchBase\":\"worker-board\"}"
+```
+
+Example project archive:
+
+```bash
+curl -X POST http://localhost:4317/api/projects/<project-id>/archive
 ```
 
 You can also attach the new worker directly to a task during provisioning:

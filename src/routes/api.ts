@@ -5,6 +5,7 @@ import { URL } from "node:url";
 
 import {
   AssignTaskInput,
+  CleanupWorkerInput,
   CreateProjectWorktreeInput,
   CreateTaskInput,
   CreateWorkerInput,
@@ -86,8 +87,8 @@ export class ApiRouter {
     const limit = this.parseIntegerParam(url.searchParams.get("limit"), "limit");
     const offset = this.parseIntegerParam(url.searchParams.get("offset"), "offset");
 
-    if (status && !["idle", "active", "blocked", "offline"].includes(status)) {
-      throw new AppError(400, "INVALID_QUERY_PARAM", "status must be idle, active, blocked, or offline.");
+    if (status && !["idle", "active", "blocked", "offline", "archived"].includes(status)) {
+      throw new AppError(400, "INVALID_QUERY_PARAM", "status must be idle, active, blocked, offline, or archived.");
     }
 
     if (sortBy && !["name", "status", "lastSeenAt", "heartbeatAgeMs", "changedFileCount"].includes(sortBy)) {
@@ -232,6 +233,13 @@ export class ApiRouter {
       return;
     }
 
+    if (method === "POST" && /^\/api\/projects\/[^/]+\/archive$/.test(url.pathname)) {
+      const projectId = this.getPathParam(url.pathname, 3);
+      const result = await this.controllerService.archiveProject(projectId);
+      sendJson(response, 200, result);
+      return;
+    }
+
     if (method === "POST" && /^\/api\/projects\/[^/]+\/worktrees$/.test(url.pathname)) {
       const projectId = this.getPathParam(url.pathname, 3);
       const body = await readJsonBody<CreateProjectWorktreeInput>(request);
@@ -273,6 +281,14 @@ export class ApiRouter {
       const taskId = this.getPathParam(url.pathname, 3);
       const body = await readJsonBody<TaskReviewInput>(request);
       const result = await this.controllerService.reviewTask(taskId, body);
+      sendJson(response, 200, result);
+      return;
+    }
+
+    if (method === "POST" && /^\/api\/workers\/[^/]+\/cleanup$/.test(url.pathname)) {
+      const workerId = this.getPathParam(url.pathname, 3);
+      const body = await readJsonBody<CleanupWorkerInput>(request);
+      const result = await this.controllerService.cleanupWorker(workerId, body);
       sendJson(response, 200, result);
       return;
     }

@@ -69,6 +69,7 @@ export function buildWorkerSummaries(
       branch: worker.assignedBranch,
       worktreePath: worker.worktreePath,
       lastSeenAt: worker.lastSeenAt,
+      ...(worker.archivedAt ? { archivedAt: worker.archivedAt } : {}),
       heartbeatAgeMs,
       isStale,
       ...(task ? { taskId: task.id, taskTitle: task.title } : {}),

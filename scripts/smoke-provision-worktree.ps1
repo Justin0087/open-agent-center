@@ -53,7 +53,7 @@ function Remove-ProvisionedWorktree {
 
 $projectName = "smoke-open-agent-center"
 $taskTitle = "Smoke test worktree provisioning"
-$taskDescription = "Verify controller can provision a worker worktree from a registered project."
+$taskDescription = "Verify browser-first onboarding can register a project, provision a worker, create a task, and assign it."
 
 Write-Host "Checking controller health at $BaseUrl ..." -ForegroundColor Cyan
 $health = Invoke-JsonRequest -Method GET -Uri "$BaseUrl/health"
@@ -69,22 +69,31 @@ $project = Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/projects" -Body @{
   defaultBranch = $DefaultBranch
 }
 
-Write-Host "Creating smoke test task..." -ForegroundColor Cyan
+Write-Host "Provisioning worktree for worker '$WorkerName' ..." -ForegroundColor Cyan
+$provisionResult = Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/projects/$($project.id)/worktrees" -Body @{
+  workerName = $WorkerName
+}
+
+Write-Host "Creating project-bound smoke test task..." -ForegroundColor Cyan
 $task = Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/tasks" -Body @{
   title = $taskTitle
   description = $taskDescription
   priority = "medium"
+  projectId = $project.id
 }
 
-Write-Host "Provisioning worktree for worker '$WorkerName' ..." -ForegroundColor Cyan
-$provisionResult = Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/projects/$($project.id)/worktrees" -Body @{
-  workerName = $WorkerName
+Write-Host "Assigning smoke test task to provisioned worker..." -ForegroundColor Cyan
+$assignment = Invoke-JsonRequest -Method POST -Uri "$BaseUrl/api/assignments" -Body @{
   taskId = $task.id
+  workerId = $provisionResult.worker.id
 }
 
 Write-Host "Fetching worker board to confirm worker persistence..." -ForegroundColor Cyan
 $workers = Invoke-JsonRequest -Method GET -Uri "$BaseUrl/api/workers?includeDiff=false"
 $worker = $workers.items | Where-Object { $_.workerId -eq $provisionResult.worker.id } | Select-Object -First 1
+
+Write-Host "Fetching task detail to confirm project-bound assignment..." -ForegroundColor Cyan
+$taskDetail = Invoke-JsonRequest -Method GET -Uri "$BaseUrl/api/tasks/$($task.id)"
 
 if (-not $worker) {
   throw "Provisioned worker was not found in the worker board response."
@@ -92,6 +101,26 @@ if (-not $worker) {
 
 if (-not (Test-Path $provisionResult.worktree.worktreePath)) {
   throw "Provisioned worktree path does not exist: $($provisionResult.worktree.worktreePath)"
+}
+
+if ($worker.projectId -ne $project.id) {
+  throw "Provisioned worker project binding mismatch. Expected $($project.id), got $($worker.projectId)."
+}
+
+if ($worker.taskId -ne $task.id) {
+  throw "Provisioned worker assignment mismatch. Expected task $($task.id), got $($worker.taskId)."
+}
+
+if ($task.projectId -ne $project.id) {
+  throw "Created task project binding mismatch. Expected $($project.id), got $($task.projectId)."
+}
+
+if ($taskDetail.assignedWorker.workerId -ne $provisionResult.worker.id) {
+  throw "Task detail assignment mismatch. Expected worker $($provisionResult.worker.id), got $($taskDetail.assignedWorker.workerId)."
+}
+
+if ($assignment.worker.id -ne $provisionResult.worker.id) {
+  throw "Assignment response mismatch. Expected worker $($provisionResult.worker.id), got $($assignment.worker.id)."
 }
 
 Write-Host "Smoke test passed." -ForegroundColor Green

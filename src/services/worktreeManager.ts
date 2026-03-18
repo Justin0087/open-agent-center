@@ -1,9 +1,17 @@
 import { execFile } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { Project, TaskIntegrationSummary, Worker, WorkerSyncSummary, WorktreeDefinition } from "../domain/types.js";
+import {
+  CleanupWorkerInput,
+  Project,
+  TaskIntegrationSummary,
+  Worker,
+  WorkerCleanupSummary,
+  WorkerSyncSummary,
+  WorktreeDefinition,
+} from "../domain/types.js";
 import { nowIso } from "../utils/ids.js";
 
 const execFileAsync = promisify(execFile);
@@ -288,6 +296,61 @@ export class WorktreeManager {
     };
   }
 
+  async cleanup(worker: Worker, input: CleanupWorkerInput = {}): Promise<WorkerCleanupSummary> {
+    const removeWorktree = input.removeWorktree !== false;
+    const deleteBranch = input.deleteBranch === true;
+    const generatedAt = nowIso();
+
+    let repoPath: string | undefined;
+    let removedWorktree = false;
+    let deletedBranch = false;
+
+    try {
+      repoPath = await this.getRepoPath(worker.worktreePath);
+    } catch {
+      repoPath = undefined;
+    }
+
+    if (removeWorktree) {
+      const worktreeExists = await pathExists(worker.worktreePath);
+      if (worktreeExists) {
+        if (repoPath) {
+          try {
+            await execFileAsync(GIT_COMMAND, ["-C", repoPath, "worktree", "remove", "--force", worker.worktreePath]);
+          } catch {
+            await rm(worker.worktreePath, { recursive: true, force: true });
+          }
+        } else {
+          await rm(worker.worktreePath, { recursive: true, force: true });
+        }
+      }
+
+      removedWorktree = !(await pathExists(worker.worktreePath));
+    }
+
+    if (deleteBranch && repoPath) {
+      try {
+        await execFileAsync(GIT_COMMAND, ["-C", repoPath, "branch", "-D", worker.assignedBranch]);
+        deletedBranch = true;
+      } catch {
+        deletedBranch = false;
+      }
+    }
+
+    return {
+      workerId: worker.id,
+      workerName: worker.name,
+      branch: worker.assignedBranch,
+      worktreePath: worker.worktreePath,
+      ...(repoPath ? { repoPath } : {}),
+      generatedAt,
+      status: "completed",
+      removedWorktree,
+      deletedBranch,
+      summary: buildCleanupSummary(worker, removeWorktree, removedWorktree, deleteBranch, deletedBranch),
+    };
+  }
+
   private async getDefaultBranch(worktreePath: string): Promise<string> {
     try {
       const { stdout } = await execFileAsync(GIT_COMMAND, [
@@ -338,4 +401,33 @@ export class WorktreeManager {
     const { stdout } = await execFileAsync(GIT_COMMAND, ["-C", worktreePath, "rev-parse", "--git-common-dir"]);
     return resolveRepoPath(path.resolve(worktreePath, stdout.trim()));
   }
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await stat(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function buildCleanupSummary(
+  worker: Worker,
+  requestedWorktreeRemoval: boolean,
+  removedWorktree: boolean,
+  requestedBranchDeletion: boolean,
+  deletedBranch: boolean,
+): string {
+  const actions: string[] = [`Archived worker ${worker.name}.`];
+
+  if (requestedWorktreeRemoval) {
+    actions.push(removedWorktree ? "Removed worktree." : "Worktree removal skipped or already completed.");
+  }
+
+  if (requestedBranchDeletion) {
+    actions.push(deletedBranch ? `Deleted branch ${worker.assignedBranch}.` : `Branch ${worker.assignedBranch} was left in place.`);
+  }
+
+  return actions.join(" ");
 }

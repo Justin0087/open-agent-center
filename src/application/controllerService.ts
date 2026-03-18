@@ -1,11 +1,15 @@
 import {
+  ArchiveProjectResult,
   AssignTaskInput,
+  CleanupWorkerInput,
+  CleanupWorkerResult,
   CreateProjectWorktreeInput,
   CreateTaskInput,
   CreateWorkerInput,
   ListWorkersInput,
   ListWorkersResult,
   Project,
+  ProjectArchiveSummary,
   ReportedWorkerStatus,
   RegisterProjectInput,
   SyncWorkerBranchInput,
@@ -161,16 +165,62 @@ export class ControllerService {
     return this.stateStore.registerProject(input);
   }
 
+  async archiveProject(projectId: string): Promise<ArchiveProjectResult> {
+    const project = this.requireProject(projectId);
+
+    if (project.archivedAt) {
+      throw new AppError(409, "PROJECT_ALREADY_ARCHIVED", `Project ${project.id} is already archived.`);
+    }
+
+    const state = this.stateStore.getState();
+    const blockingWorkers = state.workers.filter((worker) => worker.projectId === project.id && worker.status !== "archived");
+    const blockingTasks = state.tasks.filter(
+      (task) => task.projectId === project.id && !["done", "canceled"].includes(task.status),
+    );
+
+    if (blockingWorkers.length > 0 || blockingTasks.length > 0) {
+      const archive: ProjectArchiveSummary = {
+        projectId: project.id,
+        projectName: project.name,
+        generatedAt: new Date().toISOString(),
+        status: "blocked",
+        blockingWorkerIds: blockingWorkers.map((worker) => worker.id),
+        blockingTaskIds: blockingTasks.map((task) => task.id),
+        summary: `Project ${project.name} still has live workers or open tasks.`,
+      };
+
+      await this.stateStore.recordEvent({
+        type: "ProjectArchiveBlocked",
+        entityType: "project",
+        entityId: project.id,
+        payload: archive,
+      });
+
+      throw new AppError(
+        409,
+        "PROJECT_ARCHIVE_BLOCKED",
+        `Project ${project.id} cannot be archived while workers [${archive.blockingWorkerIds.join(", ")}] or tasks [${archive.blockingTaskIds.join(", ")}] remain active.`,
+      );
+    }
+
+    return this.stateStore.archiveProject(project.id, {
+      projectId: project.id,
+      projectName: project.name,
+      generatedAt: new Date().toISOString(),
+      status: "archived",
+      blockingWorkerIds: [],
+      blockingTaskIds: [],
+      summary: `Archived project ${project.name}.`,
+    });
+  }
+
   async createWorker(input: CreateWorkerInput): Promise<Worker> {
     if (!input.name?.trim()) {
       throw new AppError(400, "WORKER_NAME_REQUIRED", "Worker name is required.");
     }
 
     if (input.projectId) {
-      const project = this.stateStore.getProjectById(input.projectId);
-      if (!project) {
-        throw new AppError(404, "PROJECT_NOT_FOUND", `Project ${input.projectId} not found.`);
-      }
+      this.requireWritableProject(input.projectId);
     }
 
     if (!input.worktreePath?.trim()) {
@@ -190,10 +240,7 @@ export class ControllerService {
     }
 
     if (input.projectId) {
-      const project = this.stateStore.getProjectById(input.projectId);
-      if (!project) {
-        throw new AppError(404, "PROJECT_NOT_FOUND", `Project ${input.projectId} not found.`);
-      }
+      this.requireWritableProject(input.projectId);
     }
 
     if (!input.description?.trim()) {
@@ -399,10 +446,7 @@ export class ControllerService {
   }
 
   async createProjectWorktree(projectId: string, input: CreateProjectWorktreeInput) {
-    const project = this.stateStore.getProjectById(projectId);
-    if (!project) {
-      throw new AppError(404, "PROJECT_NOT_FOUND", `Project ${projectId} not found.`);
-    }
+    const project = this.requireWritableProject(projectId);
 
     if (!input.workerName?.trim()) {
       throw new AppError(400, "WORKER_NAME_REQUIRED", "workerName is required.");
@@ -430,6 +474,59 @@ export class ControllerService {
     };
   }
 
+  async cleanupWorker(workerId: string, input: CleanupWorkerInput = {}): Promise<CleanupWorkerResult> {
+    const worker = this.stateStore.getWorkerById(workerId);
+    if (!worker) {
+      throw new AppError(404, "WORKER_NOT_FOUND", `Worker ${workerId} not found.`);
+    }
+
+    if (worker.status === "archived") {
+      throw new AppError(409, "WORKER_ALREADY_ARCHIVED", `Worker ${worker.id} is already archived.`);
+    }
+
+    if (worker.assignedTaskId) {
+      throw new AppError(
+        409,
+        "WORKER_CLEANUP_BLOCKED",
+        `Worker ${worker.id} cannot be archived while assigned to task ${worker.assignedTaskId}.`,
+      );
+    }
+
+    await this.stateStore.recordEvent({
+      type: "WorkerCleanupRequested",
+      entityType: "worker",
+      entityId: worker.id,
+      payload: {
+        removeWorktree: input.removeWorktree !== false,
+        deleteBranch: input.deleteBranch === true,
+      },
+    });
+
+    try {
+      const cleanup = await this.worktreeManager.cleanup(worker, input);
+      return await this.stateStore.archiveWorker(worker.id, cleanup);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Worker cleanup failed.";
+      await this.stateStore.recordEvent({
+        type: "WorkerCleanupBlocked",
+        entityType: "worker",
+        entityId: worker.id,
+        payload: {
+          workerId: worker.id,
+          workerName: worker.name,
+          branch: worker.assignedBranch,
+          worktreePath: worker.worktreePath,
+          generatedAt: new Date().toISOString(),
+          status: "blocked",
+          removedWorktree: false,
+          deletedBranch: false,
+          summary: reason,
+        },
+      });
+      throw new AppError(422, "WORKER_CLEANUP_FAILED", reason);
+    }
+  }
+
   private resolveProjectForWorker(worker: Worker): Project | undefined {
     if (worker.projectId) {
       return this.stateStore.getProjectById(worker.projectId);
@@ -440,6 +537,24 @@ export class ControllerService {
       const worktreeRoot = `${project.repoPath}.worktrees`;
       return worker.worktreePath === project.repoPath || worker.worktreePath.startsWith(`${worktreeRoot}${requirePathSeparator(worktreeRoot)}`) || worker.worktreePath.startsWith(worktreeRoot);
     });
+  }
+
+  private requireProject(projectId: string): Project {
+    const project = this.stateStore.getProjectById(projectId);
+    if (!project) {
+      throw new AppError(404, "PROJECT_NOT_FOUND", `Project ${projectId} not found.`);
+    }
+
+    return project;
+  }
+
+  private requireWritableProject(projectId: string): Project {
+    const project = this.requireProject(projectId);
+    if (project.archivedAt) {
+      throw new AppError(409, "PROJECT_ARCHIVED", `Project ${project.id} is archived and cannot accept new work.`);
+    }
+
+    return project;
   }
 }
 

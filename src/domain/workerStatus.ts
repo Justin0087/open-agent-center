@@ -25,8 +25,8 @@ export function deriveWorkerStatus(
   lastSeenAt: string,
   now = Date.now(),
 ): WorkerStatus {
-  if (status === "offline") {
-    return "offline";
+  if (status === "offline" || status === "archived") {
+    return status;
   }
 
   return isWorkerStale(lastSeenAt, now) ? "offline" : status;
