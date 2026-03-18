@@ -36,11 +36,13 @@ export function buildWorkerSummaries(
   metricsByWorkerId: Record<string, WorkerBoardMetrics> = {},
 ): WorkerSummary[] {
   const now = Date.now();
+  const projectById = new Map(state.projects.map((project) => [project.id, project]));
 
   return state.workers.map((worker) => {
     const task = worker.assignedTaskId
       ? state.tasks.find((entry) => entry.id === worker.assignedTaskId)
       : undefined;
+    const project = worker.projectId ? projectById.get(worker.projectId) : undefined;
     const lastEvent = [...state.events]
       .reverse()
       .find((entry) => entry.entityType === "worker" && entry.entityId === worker.id);
@@ -62,6 +64,8 @@ export function buildWorkerSummaries(
       workerId: worker.id,
       workerName: worker.name,
       status: deriveWorkerStatus(worker.status, worker.lastSeenAt, now),
+      ...(worker.projectId ? { projectId: worker.projectId } : {}),
+      ...(project ? { projectName: project.name } : {}),
       branch: worker.assignedBranch,
       worktreePath: worker.worktreePath,
       lastSeenAt: worker.lastSeenAt,

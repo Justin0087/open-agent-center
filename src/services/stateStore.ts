@@ -156,6 +156,7 @@ export class StateStore {
       id: createId(),
       name: input.name,
       status: "idle",
+      ...(input.projectId ? { projectId: input.projectId } : {}),
       worktreePath: input.worktreePath,
       assignedBranch: input.assignedBranch,
       lastSeenAt: nowIso(),
@@ -179,6 +180,7 @@ export class StateStore {
       title: input.title,
       description: input.description,
       priority: input.priority ?? "medium",
+      ...(input.projectId ? { projectId: input.projectId } : {}),
       status: "queued",
       targetPaths: input.targetPaths ?? [],
       acceptanceChecks: input.acceptanceChecks ?? [],
@@ -215,6 +217,12 @@ export class StateStore {
 
     if (worker.assignedTaskId && worker.assignedTaskId !== task.id) {
       throw new Error(`Worker ${worker.id} already has an active task.`);
+    }
+
+    if (task.projectId || worker.projectId) {
+      if (!task.projectId || !worker.projectId || task.projectId !== worker.projectId) {
+        throw new Error(`Task ${task.id} and worker ${worker.id} must belong to the same project before assignment.`);
+      }
     }
 
     if (["done", "canceled", "review"].includes(task.status)) {

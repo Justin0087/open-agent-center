@@ -166,6 +166,13 @@ export class ControllerService {
       throw new AppError(400, "WORKER_NAME_REQUIRED", "Worker name is required.");
     }
 
+    if (input.projectId) {
+      const project = this.stateStore.getProjectById(input.projectId);
+      if (!project) {
+        throw new AppError(404, "PROJECT_NOT_FOUND", `Project ${input.projectId} not found.`);
+      }
+    }
+
     if (!input.worktreePath?.trim()) {
       throw new AppError(400, "WORKTREE_PATH_REQUIRED", "Worker worktreePath is required.");
     }
@@ -180,6 +187,13 @@ export class ControllerService {
   async createTask(input: CreateTaskInput): Promise<Task> {
     if (!input.title?.trim()) {
       throw new AppError(400, "TASK_TITLE_REQUIRED", "Task title is required.");
+    }
+
+    if (input.projectId) {
+      const project = this.stateStore.getProjectById(input.projectId);
+      if (!project) {
+        throw new AppError(404, "PROJECT_NOT_FOUND", `Project ${input.projectId} not found.`);
+      }
     }
 
     if (!input.description?.trim()) {
@@ -238,6 +252,16 @@ export class ControllerService {
 
     if (worker.assignedTaskId && worker.assignedTaskId !== input.taskId) {
       throw new AppError(409, "WORKER_BUSY", `Worker ${worker.id} already has an active task.`);
+    }
+
+    if (task.projectId || worker.projectId) {
+      if (!task.projectId || !worker.projectId || task.projectId !== worker.projectId) {
+        throw new AppError(
+          409,
+          "PROJECT_ASSIGNMENT_CONFLICT",
+          `Task ${task.id} and worker ${worker.id} must belong to the same project before assignment.`,
+        );
+      }
     }
 
     return this.stateStore.assignTask(input);
@@ -387,6 +411,7 @@ export class ControllerService {
     const worktree = await this.worktreeManager.create(project, input.workerName, input.branchBase);
     const worker = await this.stateStore.createWorker({
       name: input.workerName,
+      projectId: project.id,
       worktreePath: worktree.worktreePath,
       assignedBranch: worktree.branchName,
     });
@@ -406,6 +431,10 @@ export class ControllerService {
   }
 
   private resolveProjectForWorker(worker: Worker): Project | undefined {
+    if (worker.projectId) {
+      return this.stateStore.getProjectById(worker.projectId);
+    }
+
     const projects = this.stateStore.listProjects();
     return projects.find((project) => {
       const worktreeRoot = `${project.repoPath}.worktrees`;
