@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, test } from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 
@@ -55,6 +55,23 @@ function createController(stateStore: InstanceType<StateStoreModule["StateStore"
           worktreePath: path.join(tempCwd, ".worktrees", workerName),
           branchName: `${branchBase ?? "task"}/${workerName}`,
           rootPath: project.repoPath,
+        };
+      },
+      async cleanup(worker: { id: string; name: string; assignedBranch: string; worktreePath: string }, input: { removeWorktree?: boolean; deleteBranch?: boolean } = {}) {
+        if (input.removeWorktree !== false) {
+          await rm(worker.worktreePath, { recursive: true, force: true });
+        }
+
+        return {
+          workerId: worker.id,
+          workerName: worker.name,
+          branch: worker.assignedBranch,
+          worktreePath: worker.worktreePath,
+          generatedAt: new Date().toISOString(),
+          status: "completed" as const,
+          removedWorktree: input.removeWorktree !== false,
+          deletedBranch: input.deleteBranch === true,
+          summary: "Archived worker in test stub.",
         };
       },
     } as never,
@@ -198,6 +215,158 @@ describe("project ownership enforcement", () => {
         assignedBranch: "task/invalid-worker",
       }),
       (error) => expectAppError(error, "PROJECT_NOT_FOUND", 404),
+    );
+  });
+
+  test("controller archives an idle worker and removes its worktree", async () => {
+    const stateStore = await createStateStore();
+    const controller = createController(stateStore);
+
+    const worktreePath = path.join(tempCwd, "repo-a.worktrees", "worker-cleanup");
+    await mkdir(worktreePath, { recursive: true });
+
+    const worker = await controller.createWorker({
+      name: "worker-cleanup",
+      worktreePath,
+      assignedBranch: "task/worker-cleanup",
+    });
+
+    const result = await controller.cleanupWorker(worker.id, { removeWorktree: true });
+    const persisted = stateStore.getWorkerById(worker.id);
+
+    assert.equal(result.worker.status, "archived");
+    assert.equal(result.cleanup.status, "completed");
+    assert.equal(result.cleanup.removedWorktree, true);
+    assert.equal(persisted?.status, "archived");
+    assert.equal(persisted?.archivedAt !== undefined, true);
+
+    await assert.rejects(stat(worktreePath), /ENOENT|no such file or directory/i);
+  });
+
+  test("controller archives a clean project", async () => {
+    const stateStore = await createStateStore();
+    const controller = createController(stateStore);
+
+    const project = await controller.registerProject({
+      name: "project-clean",
+      repoPath: path.join(tempCwd, "repo-clean"),
+      defaultBranch: "main",
+    });
+
+    const result = await controller.archiveProject(project.id);
+    const persisted = stateStore.getProjectById(project.id);
+
+    assert.equal(result.project.archivedAt !== undefined, true);
+    assert.equal(result.archive.status, "archived");
+    assert.deepEqual(result.archive.blockingWorkerIds, []);
+    assert.deepEqual(result.archive.blockingTaskIds, []);
+    assert.equal(persisted?.archivedAt !== undefined, true);
+  });
+
+  test("controller blocks project archive when live workers exist", async () => {
+    const stateStore = await createStateStore();
+    const controller = createController(stateStore);
+
+    const project = await controller.registerProject({
+      name: "project-workers",
+      repoPath: path.join(tempCwd, "repo-workers"),
+      defaultBranch: "main",
+    });
+
+    await controller.createWorker({
+      name: "worker-live",
+      projectId: project.id,
+      worktreePath: path.join(tempCwd, "repo-workers.worktrees", "worker-live"),
+      assignedBranch: "task/worker-live",
+    });
+
+    await assert.rejects(
+      controller.archiveProject(project.id),
+      (error) => expectAppError(error, "PROJECT_ARCHIVE_BLOCKED", 409),
+    );
+  });
+
+  test("controller blocks project archive when open tasks exist", async () => {
+    const stateStore = await createStateStore();
+    const controller = createController(stateStore);
+
+    const project = await controller.registerProject({
+      name: "project-tasks",
+      repoPath: path.join(tempCwd, "repo-tasks"),
+      defaultBranch: "main",
+    });
+
+    await controller.createTask({
+      title: "Open task",
+      description: "Queued work should block archive.",
+      projectId: project.id,
+    });
+
+    await assert.rejects(
+      controller.archiveProject(project.id),
+      (error) => expectAppError(error, "PROJECT_ARCHIVE_BLOCKED", 409),
+    );
+  });
+
+  test("controller rejects new work against archived projects", async () => {
+    const stateStore = await createStateStore();
+    const controller = createController(stateStore);
+
+    const project = await controller.registerProject({
+      name: "project-archived",
+      repoPath: path.join(tempCwd, "repo-archived"),
+      defaultBranch: "main",
+    });
+
+    await controller.archiveProject(project.id);
+
+    await assert.rejects(
+      controller.createTask({
+        title: "Blocked task",
+        description: "Should be rejected.",
+        projectId: project.id,
+      }),
+      (error) => expectAppError(error, "PROJECT_ARCHIVED", 409),
+    );
+
+    await assert.rejects(
+      controller.createWorker({
+        name: "blocked-worker",
+        projectId: project.id,
+        worktreePath: path.join(tempCwd, "repo-archived.worktrees", "blocked-worker"),
+        assignedBranch: "task/blocked-worker",
+      }),
+      (error) => expectAppError(error, "PROJECT_ARCHIVED", 409),
+    );
+
+    await assert.rejects(
+      controller.createProjectWorktree(project.id, {
+        workerName: "blocked-worktree",
+        branchBase: "feature",
+      }),
+      (error) => expectAppError(error, "PROJECT_ARCHIVED", 409),
+    );
+  });
+
+  test("controller blocks cleanup for assigned workers", async () => {
+    const stateStore = await createStateStore();
+    const controller = createController(stateStore);
+
+    const task = await controller.createTask({
+      title: "Busy task",
+      description: "Assigned workers should not be archived.",
+    });
+    const worker = await controller.createWorker({
+      name: "busy-worker",
+      worktreePath: path.join(tempCwd, "repo-a.worktrees", "busy-worker"),
+      assignedBranch: "task/busy-worker",
+    });
+
+    await controller.assignTask({ taskId: task.id, workerId: worker.id });
+
+    await assert.rejects(
+      controller.cleanupWorker(worker.id, { removeWorktree: true }),
+      (error) => expectAppError(error, "WORKER_CLEANUP_BLOCKED", 409),
     );
   });
 });

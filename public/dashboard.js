@@ -21,6 +21,9 @@ const EMPTY_WORKER_BOARD = {
   },
 };
 
+const PROJECT_FILTER_ALL = "__all__";
+const PROJECT_FILTER_UNBOUND = "__unbound__";
+
 const elements = {
   refreshMeta: document.querySelector("#refresh-meta"),
   healthIndicator: document.querySelector("#health-indicator"),
@@ -28,9 +31,15 @@ const elements = {
   errorBanner: document.querySelector("#error-banner"),
   liveRegion: document.querySelector("#live-region"),
   summaryGrid: document.querySelector("#summary-grid"),
+  projectFilterSelect: document.querySelector("#project-filter-select"),
+  projectFilterSummary: document.querySelector("#project-filter-summary"),
+  registerProjectForm: document.querySelector("#register-project-form"),
   createTaskForm: document.querySelector("#create-task-form"),
   provisionWorkerForm: document.querySelector("#provision-worker-form"),
   assignTaskForm: document.querySelector("#assign-task-form"),
+  projectNameInput: document.querySelector("#project-name-input"),
+  projectRepoPathInput: document.querySelector("#project-repo-path-input"),
+  projectDefaultBranchInput: document.querySelector("#project-default-branch-input"),
   taskProjectSelect: document.querySelector("#task-project-select"),
   taskTitleInput: document.querySelector("#task-title-input"),
   taskDescriptionInput: document.querySelector("#task-description-input"),
@@ -56,6 +65,9 @@ let mutationPending = false;
 let selectedReviewTaskId = "";
 let reviewDetailRequestId = 0;
 let reviewNotesByTaskId = {};
+let activeProjectFilter = PROJECT_FILTER_ALL;
+let pendingNavigation = undefined;
+let activeHighlightTimeoutId = 0;
 let actionAvailability = {
   disableProvision: true,
   disableAssign: true,
@@ -119,13 +131,108 @@ function renderStatus(healthy, stale, refreshedAt) {
 }
 
 function renderSnapshot(snapshot, workerBoard) {
-  renderSummary(snapshot, workerBoard);
+  renderProjectFilterOptions(snapshot.projects);
+  const view = buildScopedView(snapshot, workerBoard.items);
+
+  renderSummary(view.snapshot, snapshot.projects.length);
   renderActionForms(snapshot, workerBoard.items);
   renderProjects(snapshot.projects);
-  renderWorkers(workerBoard.items);
-  renderTasks(snapshot.tasks, workerBoard.items, snapshot.projects);
-  renderReviewQueue(snapshot);
-  renderEvents(snapshot.events);
+  renderWorkers(view.workers);
+  renderTasks(view.tasks, view.workers, snapshot.projects);
+  renderReviewQueue(view.snapshot);
+  renderEvents(view.events);
+  applyPendingNavigation();
+}
+
+function buildScopedView(snapshot, workers) {
+  const tasks = snapshot.tasks.filter((task) => matchesActiveProjectFilter(task.projectId));
+  const workersInScope = workers.filter((worker) => matchesActiveProjectFilter(worker.projectId));
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const workerIds = new Set(workersInScope.map((worker) => worker.workerId));
+  const runs = snapshot.runs.filter((run) => taskIds.has(run.taskId) || (run.workerId ? workerIds.has(run.workerId) : false));
+  const runIds = new Set(runs.map((run) => run.id));
+  const artifacts = snapshot.artifacts.filter((artifact) => taskIds.has(artifact.taskId));
+  const artifactIds = new Set(artifacts.map((artifact) => artifact.id));
+  const events = snapshot.events.filter((event) => {
+    switch (event.entityType) {
+      case "project":
+        return activeProjectFilter !== PROJECT_FILTER_UNBOUND && (activeProjectFilter === PROJECT_FILTER_ALL || event.entityId === activeProjectFilter);
+      case "task":
+        return taskIds.has(event.entityId);
+      case "worker":
+        return workerIds.has(event.entityId);
+      case "run":
+        return runIds.has(event.entityId);
+      case "artifact":
+        return artifactIds.has(event.entityId);
+      default:
+        return false;
+    }
+  });
+
+  return {
+    workers: workersInScope,
+    tasks,
+    events,
+    snapshot: {
+      ...snapshot,
+      workers: workersInScope,
+      tasks,
+      runs,
+      artifacts,
+      events,
+    },
+  };
+}
+
+function matchesActiveProjectFilter(projectId) {
+  if (activeProjectFilter === PROJECT_FILTER_ALL) {
+    return true;
+  }
+
+  if (activeProjectFilter === PROJECT_FILTER_UNBOUND) {
+    return !projectId;
+  }
+
+  return projectId === activeProjectFilter;
+}
+
+function renderProjectFilterOptions(projects) {
+  const optionEntries = [
+    [PROJECT_FILTER_ALL, "All projects"],
+    [PROJECT_FILTER_UNBOUND, "Unbound only"],
+    ...projects.map((project) => [project.id, `${project.name} (${project.defaultBranch})${project.archivedAt ? " [archived]" : ""}`]),
+  ];
+
+  if (activeProjectFilter !== PROJECT_FILTER_ALL && activeProjectFilter !== PROJECT_FILTER_UNBOUND && !projects.some((project) => project.id === activeProjectFilter)) {
+    activeProjectFilter = PROJECT_FILTER_ALL;
+  }
+
+  const options = optionEntries.map(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    return option;
+  });
+
+  elements.projectFilterSelect.replaceChildren(...options);
+  elements.projectFilterSelect.value = activeProjectFilter;
+  elements.projectFilterSummary.textContent = describeActiveProjectFilter(projects);
+}
+
+function describeActiveProjectFilter(projects) {
+  if (activeProjectFilter === PROJECT_FILTER_ALL) {
+    return "Showing all projects.";
+  }
+
+  if (activeProjectFilter === PROJECT_FILTER_UNBOUND) {
+    return "Showing unbound workers and tasks only.";
+  }
+
+  const project = projects.find((entry) => entry.id === activeProjectFilter);
+  return project
+    ? `Showing project ${project.name} on branch ${project.defaultBranch}.`
+    : "Showing all projects.";
 }
 
 function renderReviewQueue(snapshot) {
@@ -392,6 +499,7 @@ function createIntegrationFact(label, value) {
 
 function renderActionForms(snapshot, workers) {
   const assignableTasks = getAssignableTasks(snapshot.tasks);
+  const writableProjects = getWritableProjects(snapshot.projects);
 
   renderTaskProjectOptions(snapshot.projects);
   renderProjectOptions(snapshot.projects);
@@ -400,17 +508,17 @@ function renderActionForms(snapshot, workers) {
   renderAssignmentWorkerOptions(getAssignableWorkersForSelectedTask(assignableTasks, workers));
 
   actionAvailability = {
-    disableProvision: snapshot.projects.length === 0,
+    disableProvision: writableProjects.length === 0,
     disableAssign: assignableTasks.length === 0 || getAssignableWorkersForSelectedTask(assignableTasks, workers).length === 0,
   };
 
   updateActionDisabledState();
 }
 
-function renderSummary(snapshot, workerBoard) {
+function renderSummary(snapshot, projectCount) {
   const cards = [
-    ["Projects", snapshot.projects.length],
-    ["Workers", workerBoard.pagination.total],
+    ["Projects", projectCount],
+    ["Workers", snapshot.workers?.length ?? 0],
     ["Tasks", snapshot.tasks.length],
     ["Runs", snapshot.runs.length],
     ["Artifacts", snapshot.artifacts.length],
@@ -438,15 +546,158 @@ function renderProjects(projects) {
   renderTableBody(
     elements.projectsBody,
     projects,
-    4,
-    "No projects registered yet. Create one through the API to populate this table.",
+    6,
+    "No projects registered yet. Use Register Project above to populate this table.",
     (project) => [
       project.name,
+      renderProjectStatus(project),
       project.defaultBranch,
       asMono(project.repoPath),
       formatDateTime(project.createdAt),
+      renderProjectActions(project),
     ],
   );
+}
+
+function renderProjectStatus(project) {
+  if (project.archivedAt) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "action-stack";
+
+    const archivedBadge = statusBadge("archived");
+    const note = document.createElement("p");
+    note.className = "action-note";
+    note.textContent = `Archived ${formatDateTime(project.archivedAt)}.`;
+
+    wrapper.append(archivedBadge, note);
+    return wrapper;
+  }
+
+  return statusBadge("active");
+}
+
+function renderProjectActions(project) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "action-stack";
+
+  const archiveBlock = getLatestProjectArchiveBlock(project.id);
+
+  if (project.archivedAt) {
+    const note = document.createElement("p");
+    note.className = "action-note";
+    note.textContent = "Archived projects stay visible for history and cannot accept new work.";
+    wrapper.append(note, ...renderProjectArchiveBlockDetails(project.id, archiveBlock));
+    return wrapper;
+  }
+
+  const archiveButton = createActionButton("Archive", async () => {
+    await submitProjectArchive(project);
+  }, false, true);
+
+  const note = document.createElement("p");
+  note.className = "action-note";
+  note.textContent = "Archive is allowed only after all workers are archived and all tasks are closed.";
+
+  wrapper.append(archiveButton, note, ...renderProjectArchiveBlockDetails(project.id, archiveBlock));
+  return wrapper;
+}
+
+function getLatestProjectArchiveBlock(projectId) {
+  const event = [...lastSnapshot.events]
+    .reverse()
+    .find((entry) => entry.type === "ProjectArchiveBlocked" && entry.entityType === "project" && entry.entityId === projectId);
+
+  if (!event || typeof event.payload !== "object" || event.payload === null) {
+    return undefined;
+  }
+
+  return event.payload;
+}
+
+function renderProjectArchiveBlockDetails(projectId, archiveBlock) {
+  if (!archiveBlock) {
+    return [];
+  }
+
+  const details = [];
+
+  const heading = document.createElement("p");
+  heading.className = "action-note action-note--warning";
+  heading.textContent = archiveBlock.generatedAt
+    ? `Last archive attempt was blocked at ${formatDateTime(archiveBlock.generatedAt)}.`
+    : "Last archive attempt was blocked.";
+  details.push(heading);
+
+  if (archiveBlock.summary) {
+    const summary = document.createElement("p");
+    summary.className = "action-note";
+    summary.textContent = archiveBlock.summary;
+    details.push(summary);
+  }
+
+  const blockingGroups = [
+    ["Workers", archiveBlock.blockingWorkerIds, (id) => formatProjectBlockingWorker(projectId, id)],
+    ["Tasks", archiveBlock.blockingTaskIds, (id) => formatProjectBlockingTask(projectId, id)],
+  ];
+
+  for (const [label, ids, formatter] of blockingGroups) {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      continue;
+    }
+
+    const group = document.createElement("div");
+    group.className = "project-blockers";
+
+    const labelNode = document.createElement("span");
+    labelNode.className = "project-blockers__label";
+    labelNode.textContent = label;
+
+    const items = document.createElement("div");
+    items.className = "project-blockers__items";
+    items.append(...ids.map((id) => formatter(id)));
+
+    group.append(labelNode, items);
+    details.push(group);
+  }
+
+  return details;
+}
+
+function formatProjectBlockingWorker(projectId, workerId) {
+  const worker = lastSnapshot.workers.find((entry) => entry.id === workerId);
+
+  if (!worker) {
+    return createProjectBlockerButton(projectId, "worker", workerId, workerId, workerId);
+  }
+
+  return createProjectBlockerButton(projectId, "worker", workerId, worker.name, workerId);
+}
+
+function formatProjectBlockingTask(projectId, taskId) {
+  const task = lastSnapshot.tasks.find((entry) => entry.id === taskId);
+
+  if (!task) {
+    return createProjectBlockerButton(projectId, "task", taskId, taskId, taskId);
+  }
+
+  return createProjectBlockerButton(projectId, "task", taskId, task.title, taskId);
+}
+
+function createProjectBlockerButton(projectId, entityType, entityId, primaryLabel, secondaryLabel) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "project-blockers__item project-blockers__item--interactive";
+  button.dataset.dashboardAction = "true";
+  button.dataset.baseDisabled = "false";
+  button.title = `Locate ${entityType} ${secondaryLabel}`;
+  button.append(
+    textSpan(primaryLabel, "project-blockers__primary"),
+    textSpan(secondaryLabel, "project-blockers__secondary mono"),
+  );
+  button.addEventListener("click", () => {
+    navigateToProjectEntity(projectId, entityType, entityId, primaryLabel);
+  });
+  return button;
 }
 
 function renderWorkers(workers) {
@@ -470,6 +721,9 @@ function renderWorkers(workers) {
       formatDateTime(worker.lastSeenAt),
       renderWorkerActions(worker),
     ],
+    (row, worker) => {
+      row.dataset.workerId = worker.workerId;
+    },
   );
 }
 
@@ -535,6 +789,9 @@ function renderTasks(tasks, workers, projects) {
         renderTaskActions(task, workers),
       ];
     },
+    (row, task) => {
+      row.dataset.taskId = task.id;
+    },
   );
 }
 
@@ -566,7 +823,7 @@ function renderEvents(events) {
   }));
 }
 
-function renderTableBody(container, rows, colSpan, emptyMessage, renderRow) {
+function renderTableBody(container, rows, colSpan, emptyMessage, renderRow, configureRow = undefined) {
   if (rows.length === 0) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
@@ -580,6 +837,10 @@ function renderTableBody(container, rows, colSpan, emptyMessage, renderRow) {
   container.replaceChildren(...rows.map((rowData) => {
     const row = document.createElement("tr");
     const cells = renderRow(rowData);
+
+    if (typeof configureRow === "function") {
+      configureRow(row, rowData);
+    }
 
     for (const value of cells) {
       const cell = document.createElement("td");
@@ -603,12 +864,13 @@ function createEmptyState(message) {
 }
 
 function renderTaskProjectOptions(projects) {
+  const activeProjects = getWritableProjects(projects);
   const previousValue = elements.taskProjectSelect.value;
   const emptyOption = document.createElement("option");
   emptyOption.value = "";
   emptyOption.textContent = "No project binding";
 
-  const options = projects.map((project) => {
+  const options = activeProjects.map((project) => {
     const option = document.createElement("option");
     option.value = project.id;
     option.textContent = `${project.name} (${project.defaultBranch})`;
@@ -616,13 +878,14 @@ function renderTaskProjectOptions(projects) {
   });
 
   elements.taskProjectSelect.replaceChildren(emptyOption, ...options);
-  const stillExists = projects.some((project) => project.id === previousValue);
+  const stillExists = activeProjects.some((project) => project.id === previousValue);
   elements.taskProjectSelect.value = stillExists ? previousValue : "";
 }
 
 function renderProjectOptions(projects) {
+  const activeProjects = getWritableProjects(projects);
   const previousValue = elements.projectSelect.value;
-  const options = projects.map((project) => {
+  const options = activeProjects.map((project) => {
     const option = document.createElement("option");
     option.value = project.id;
     option.textContent = `${project.name} (${project.defaultBranch})`;
@@ -639,8 +902,12 @@ function renderProjectOptions(projects) {
   }
 
   elements.projectSelect.replaceChildren(...options);
-  const stillExists = projects.some((project) => project.id === previousValue);
-  elements.projectSelect.value = stillExists ? previousValue : projects[0].id;
+  const stillExists = activeProjects.some((project) => project.id === previousValue);
+  elements.projectSelect.value = stillExists ? previousValue : activeProjects[0].id;
+}
+
+function getWritableProjects(projects) {
+  return projects.filter((project) => !project.archivedAt);
 }
 
 function renderProvisionTaskOptions(tasks) {
@@ -719,6 +986,16 @@ function renderWorkerActions(worker) {
   const wrapper = document.createElement("div");
   wrapper.className = "action-stack";
 
+  if (worker.status === "archived") {
+    const note = document.createElement("p");
+    note.className = "action-note";
+    note.textContent = worker.archivedAt
+      ? `Archived ${formatDateTime(worker.archivedAt)}.`
+      : "Archived worker.";
+    wrapper.append(note);
+    return wrapper;
+  }
+
   const actionRow = document.createElement("div");
   actionRow.className = "action-row";
 
@@ -738,7 +1015,19 @@ function renderWorkerActions(worker) {
     );
   }, false, true);
 
-  actionRow.append(launchButton, syncButton);
+  const archiveButton = createActionButton("Archive", async () => {
+    await mutateJson(
+      `/api/workers/${worker.workerId}/cleanup`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ removeWorktree: true, deleteBranch: false }),
+      },
+      (body) => body?.cleanup?.summary ?? `Worker ${worker.workerName} archived.`,
+    );
+  }, Boolean(worker.taskId), true);
+
+  actionRow.append(launchButton, syncButton, archiveButton);
 
   const heartbeatRow = document.createElement("div");
   heartbeatRow.className = "action-row";
@@ -754,6 +1043,13 @@ function renderWorkerActions(worker) {
     const note = document.createElement("p");
     note.className = "action-note";
     note.textContent = worker.lastSyncSummary;
+    wrapper.append(note);
+  }
+
+  if (worker.taskId) {
+    const note = document.createElement("p");
+    note.className = "action-note";
+    note.textContent = "Archive is blocked while the worker is assigned to a task.";
     wrapper.append(note);
   }
 
@@ -789,6 +1085,16 @@ function createActionButton(label, handler, disabled = false, ghost = false) {
 }
 
 function bindActions() {
+  elements.projectFilterSelect.addEventListener("change", (event) => {
+    activeProjectFilter = event.target.value;
+    renderSnapshot(lastSnapshot, lastWorkerBoard);
+  });
+
+  elements.registerProjectForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitRegisterProject();
+  });
+
   elements.createTaskForm.addEventListener("submit", (event) => {
     event.preventDefault();
     void submitCreateTask();
@@ -811,6 +1117,31 @@ function bindActions() {
     event.preventDefault();
     void submitAssignTask();
   });
+}
+
+async function submitRegisterProject() {
+  const name = elements.projectNameInput.value.trim();
+  const repoPath = elements.projectRepoPathInput.value.trim();
+  const defaultBranch = elements.projectDefaultBranchInput.value.trim();
+
+  if (!name || !repoPath) {
+    showError("Project name and repository path are required.");
+    announce("Project name and repository path are required.");
+    return;
+  }
+
+  await mutateJson(
+    "/api/projects",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, repoPath, ...(defaultBranch ? { defaultBranch } : {}) }),
+    },
+    `Project ${name} registered.`,
+  );
+
+  elements.registerProjectForm.reset();
+  elements.projectDefaultBranchInput.value = "main";
 }
 
 async function submitCreateTask() {
@@ -897,6 +1228,39 @@ async function submitAssignTask() {
   );
 }
 
+async function submitProjectArchive(project) {
+  setMutationPending(true);
+
+  try {
+    const response = await fetch(`/api/projects/${project.id}/archive`, {
+      method: "POST",
+      cache: "no-store",
+    });
+
+    const responseBody = await safeReadJson(response);
+    await refresh();
+
+    if (!response.ok) {
+      const message = responseBody?.error ?? `Request failed with ${response.status}`;
+      showError(`Action failed: ${message}`);
+      announce(`Action failed. ${message}`);
+      return undefined;
+    }
+
+    showError("");
+    announce(responseBody?.archive?.summary ?? `Project ${project.name} archived.`);
+    return responseBody;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown mutation failure.";
+    await refresh();
+    showError(`Action failed: ${message}`);
+    announce(`Action failed. ${message}`);
+    return undefined;
+  } finally {
+    setMutationPending(false);
+  }
+}
+
 async function mutateJson(url, options, successMessage) {
   setMutationPending(true);
 
@@ -945,6 +1309,10 @@ function updateActionDisabledState() {
   const disableProvision = mutationPending || actionAvailability.disableProvision;
   const disableTaskCreate = mutationPending;
   const disableAssign = mutationPending || actionAvailability.disableAssign;
+
+  for (const element of Array.from(elements.registerProjectForm.elements)) {
+    element.disabled = mutationPending;
+  }
 
   for (const element of Array.from(elements.createTaskForm.elements)) {
     element.disabled = disableTaskCreate;
@@ -1068,6 +1436,45 @@ function getAssignableWorkersForSelectedTask(tasks, workers) {
 
 function syncProvisionTaskOptions() {
   renderProvisionTaskOptions(getAssignableTasks(lastSnapshot.tasks));
+}
+
+function navigateToProjectEntity(projectId, entityType, entityId, label) {
+  activeProjectFilter = projectId || PROJECT_FILTER_ALL;
+  pendingNavigation = { entityType, entityId };
+  renderSnapshot(lastSnapshot, lastWorkerBoard);
+  announce(`Navigated to ${entityType} ${label}.`);
+}
+
+function applyPendingNavigation() {
+  if (!pendingNavigation) {
+    return;
+  }
+
+  const { entityType, entityId } = pendingNavigation;
+  pendingNavigation = undefined;
+
+  const selector = entityType === "worker"
+    ? `tr[data-worker-id="${entityId}"]`
+    : `tr[data-task-id="${entityId}"]`;
+  const row = document.querySelector(selector);
+
+  if (!row) {
+    return;
+  }
+
+  row.scrollIntoView({ behavior: "smooth", block: "center" });
+  row.classList.remove("table-row--targeted");
+  void row.offsetWidth;
+  row.classList.add("table-row--targeted");
+
+  if (activeHighlightTimeoutId) {
+    window.clearTimeout(activeHighlightTimeoutId);
+  }
+
+  activeHighlightTimeoutId = window.setTimeout(() => {
+    row.classList.remove("table-row--targeted");
+    activeHighlightTimeoutId = 0;
+  }, 2400);
 }
 
 function syncAssignmentWorkerOptions() {

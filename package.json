@@ -11,7 +11,12 @@
     "check": "tsc --noEmit -p tsconfig.json",
     "check:test": "tsc --noEmit -p tsconfig.test.json",
     "test": "tsx --test tests/**/*.test.ts",
+    "smoke:lifecycle": "pwsh -File scripts/smoke-lifecycle.ps1",
     "smoke:worktree": "pwsh -File scripts/smoke-provision-worktree.ps1",
+    "smoke:project-archive": "pwsh -File scripts/smoke-project-archive.ps1",
+    "smoke:project-archive:blocked": "pwsh -File scripts/smoke-project-archive.ps1 -Scenario blocked",
+    "smoke:cleanup": "pwsh -File scripts/smoke-worker-cleanup.ps1",
+    "smoke:cleanup:blocked": "pwsh -File scripts/smoke-worker-cleanup.ps1 -Scenario blocked",
     "smoke:review": "pwsh -File scripts/smoke-review-queue.ps1",
     "smoke:review:conflict": "pwsh -File scripts/smoke-review-queue.ps1 -Scenario approve-conflict",
     "smoke:review:changes": "pwsh -File scripts/smoke-review-queue.ps1 -Scenario request-changes-reassign"

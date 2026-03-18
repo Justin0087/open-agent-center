@@ -49,12 +49,43 @@
         <div class="summary-grid" id="summary-grid"></div>
       </section>
 
+      <section class="panel" aria-labelledby="filters-heading">
+        <div class="panel__header">
+          <h2 id="filters-heading">Project Scope</h2>
+          <p class="muted">Filter dashboard read views by project without changing operator actions.</p>
+        </div>
+        <div class="filter-bar">
+          <label class="field filter-field">
+            <span>Visible Project</span>
+            <select id="project-filter-select" name="projectFilter"></select>
+          </label>
+          <p class="filter-bar__summary" id="project-filter-summary">Showing all projects.</p>
+        </div>
+      </section>
+
       <section class="panel" aria-labelledby="actions-heading">
         <div class="panel__header">
           <h2 id="actions-heading">Operator Actions</h2>
           <p class="muted">Use the current controller APIs without leaving the dashboard.</p>
         </div>
         <div class="action-grid">
+          <form class="action-form" id="register-project-form">
+            <h3>Register Project</h3>
+            <label class="field">
+              <span>Name</span>
+              <input id="project-name-input" name="name" type="text" required maxlength="120">
+            </label>
+            <label class="field">
+              <span>Repository Path</span>
+              <input id="project-repo-path-input" name="repoPath" type="text" required placeholder="C:\\repo\\path">
+            </label>
+            <label class="field">
+              <span>Default Branch</span>
+              <input id="project-default-branch-input" name="defaultBranch" type="text" maxlength="80" value="main">
+            </label>
+            <button class="button" type="submit">Register Project</button>
+          </form>
+
           <form class="action-form" id="create-task-form">
             <h3>Create Task</h3>
             <label class="field">
@@ -127,9 +158,11 @@
             <thead>
               <tr>
                 <th scope="col">Name</th>
+                <th scope="col">Status</th>
                 <th scope="col">Default Branch</th>
                 <th scope="col">Repository Path</th>
                 <th scope="col">Created</th>
+                <th scope="col">Actions</th>
               </tr>
             </thead>
             <tbody id="projects-body"></tbody>

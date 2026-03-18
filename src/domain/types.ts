@@ -1,9 +1,11 @@
-export type WorkerStatus = "idle" | "active" | "blocked" | "offline";
-export type ReportedWorkerStatus = Exclude<WorkerStatus, "offline">;
+export type WorkerStatus = "idle" | "active" | "blocked" | "offline" | "archived";
+export type ReportedWorkerStatus = Exclude<WorkerStatus, "offline" | "archived">;
 export type TaskStatus = "queued" | "in_progress" | "review" | "done" | "blocked" | "canceled";
 export type RunResult = "success" | "needs_review" | "failed";
 export type EventType =
   | "ProjectRegistered"
+  | "ProjectArchived"
+  | "ProjectArchiveBlocked"
   | "TaskCreated"
   | "TaskUpdated"
   | "TaskMovedToReview"
@@ -11,6 +13,10 @@ export type EventType =
   | "TaskIntegrationBlocked"
   | "TaskIntegrationConflicted"
   | "WorkerCreated"
+  | "WorkerArchived"
+  | "WorkerCleanupRequested"
+  | "WorkerCleanupCompleted"
+  | "WorkerCleanupBlocked"
   | "WorkerLaunched"
   | "WorkerLaunchFailed"
   | "WorkerHeartbeat"
@@ -36,6 +42,7 @@ export interface Project {
   repoPath: string;
   defaultBranch: string;
   createdAt: string;
+  archivedAt?: string;
 }
 
 export interface Worker {
@@ -49,6 +56,7 @@ export interface Worker {
   processId?: number;
   lastSeenAt: string;
   createdAt: string;
+  archivedAt?: string;
 }
 
 export interface Task {
@@ -107,6 +115,21 @@ export interface RegisterProjectInput {
   defaultBranch?: string;
 }
 
+export interface ProjectArchiveSummary {
+  projectId: string;
+  projectName: string;
+  generatedAt: string;
+  status: "archived" | "blocked";
+  blockingWorkerIds: string[];
+  blockingTaskIds: string[];
+  summary: string;
+}
+
+export interface ArchiveProjectResult {
+  project: Project;
+  archive: ProjectArchiveSummary;
+}
+
 export interface CreateWorkerInput {
   name: string;
   projectId?: string;
@@ -156,6 +179,29 @@ export interface ListWorkersResult {
 export interface AssignTaskInput {
   taskId: string;
   workerId: string;
+}
+
+export interface CleanupWorkerInput {
+  removeWorktree?: boolean;
+  deleteBranch?: boolean;
+}
+
+export interface WorkerCleanupSummary {
+  workerId: string;
+  workerName: string;
+  branch: string;
+  worktreePath: string;
+  repoPath?: string;
+  generatedAt: string;
+  status: "completed" | "blocked";
+  removedWorktree: boolean;
+  deletedBranch: boolean;
+  summary: string;
+}
+
+export interface CleanupWorkerResult {
+  worker: Worker;
+  cleanup: WorkerCleanupSummary;
 }
 
 export type TaskTransitionAction = "unassign" | "block" | "review" | "complete" | "cancel";
@@ -235,6 +281,7 @@ export interface WorkerSummary {
   lastSyncStatus?: "synced" | "conflicted";
   lastSyncTargetBranch?: string;
   lastSyncSummary?: string;
+  archivedAt?: string;
 }
 
 export interface WorkerDiffFile {
