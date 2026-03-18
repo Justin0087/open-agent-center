@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
+  AgentRuntimeKind,
   AppState,
   ArchiveProjectResult,
   Artifact,
@@ -12,6 +13,7 @@ import {
   EventRecord,
   Project,
   ProjectArchiveSummary,
+  DEFAULT_AGENT_RUNTIME_KIND,
   ReportedWorkerStatus,
   RegisterProjectInput,
   Run,
@@ -44,6 +46,24 @@ function cloneState<T>(value: T): T {
 
 export class StateStore {
   private state: AppState = cloneState(EMPTY_STATE);
+
+  private normalizeState(): boolean {
+    let changed = false;
+
+    this.state.workers = this.state.workers.map((worker) => {
+      if (worker.runtimeKind) {
+        return worker;
+      }
+
+      changed = true;
+      return {
+        ...worker,
+        runtimeKind: DEFAULT_AGENT_RUNTIME_KIND,
+      };
+    });
+
+    return changed;
+  }
 
   private getProjectRecord(projectId: string): Project | undefined {
     return this.state.projects.find((entry) => entry.id === projectId);
@@ -114,6 +134,9 @@ export class StateStore {
     try {
       const raw = await readFile(STATE_FILE, "utf8");
       this.state = JSON.parse(raw) as AppState;
+      if (this.normalizeState()) {
+        await this.persist();
+      }
     } catch {
       await this.persist();
     }
@@ -176,6 +199,7 @@ export class StateStore {
     const worker: Worker = {
       id: createId(),
       name: input.name,
+      runtimeKind: normalizeRuntimeKind(input.runtimeKind),
       status: "idle",
       ...(input.projectId ? { projectId: input.projectId } : {}),
       worktreePath: input.worktreePath,
@@ -641,4 +665,8 @@ export class StateStore {
   private async persist(): Promise<void> {
     await writeFile(STATE_FILE, `${JSON.stringify(this.state, null, 2)}\n`, "utf8");
   }
+}
+
+function normalizeRuntimeKind(runtimeKind: AgentRuntimeKind | undefined): AgentRuntimeKind {
+  return runtimeKind ?? DEFAULT_AGENT_RUNTIME_KIND;
 }

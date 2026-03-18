@@ -1,4 +1,9 @@
+export const AGENT_RUNTIME_KINDS = ["vscode-copilot", "claude-code", "openclaw", "custom"] as const;
+export type AgentRuntimeKind = (typeof AGENT_RUNTIME_KINDS)[number];
+export const DEFAULT_AGENT_RUNTIME_KIND: AgentRuntimeKind = "vscode-copilot";
+
 export type WorkerStatus = "idle" | "active" | "blocked" | "offline" | "archived";
+export type AgentSessionStatus = WorkerStatus;
 export type ReportedWorkerStatus = Exclude<WorkerStatus, "offline" | "archived">;
 export type TaskStatus = "queued" | "in_progress" | "review" | "done" | "blocked" | "canceled";
 export type RunResult = "success" | "needs_review" | "failed";
@@ -48,6 +53,7 @@ export interface Project {
 export interface Worker {
   id: string;
   name: string;
+  runtimeKind: AgentRuntimeKind;
   status: WorkerStatus;
   projectId?: string;
   worktreePath: string;
@@ -58,6 +64,8 @@ export interface Worker {
   createdAt: string;
   archivedAt?: string;
 }
+
+export type AgentSession = Worker;
 
 export interface Task {
   id: string;
@@ -132,6 +140,7 @@ export interface ArchiveProjectResult {
 
 export interface CreateWorkerInput {
   name: string;
+  runtimeKind?: AgentRuntimeKind;
   projectId?: string;
   worktreePath: string;
   assignedBranch: string;
@@ -249,6 +258,7 @@ export interface TaskReviewResult {
 
 export interface CreateProjectWorktreeInput {
   workerName: string;
+  runtimeKind?: AgentRuntimeKind;
   branchBase?: string;
   taskId?: string;
 }
@@ -262,6 +272,7 @@ export interface WorktreeDefinition {
 export interface WorkerSummary {
   workerId: string;
   workerName: string;
+  runtimeKind: AgentRuntimeKind;
   status: WorkerStatus;
   projectId?: string;
   projectName?: string;
@@ -283,6 +294,8 @@ export interface WorkerSummary {
   lastSyncSummary?: string;
   archivedAt?: string;
 }
+
+export type AgentSessionSummary = WorkerSummary;
 
 export interface WorkerDiffFile {
   path: string;
@@ -310,6 +323,7 @@ export interface WorkerDiffSummary {
 export interface TaskAssignedWorkerSummary {
   workerId: string;
   workerName: string;
+  runtimeKind: AgentRuntimeKind;
   status: WorkerStatus;
   projectId?: string;
   branch: string;

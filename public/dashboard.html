@@ -12,7 +12,7 @@
         <p class="eyebrow">Open Agent Center</p>
         <h1>Validation Dashboard</h1>
         <p class="hero__copy">
-          A controller surface for validating projects, workers, tasks, runs, artifacts, event flow, heartbeat freshness, task assignment, and worker branch sync flow.
+          A controller surface for validating projects, agent sessions, tasks, runs, artifacts, event flow, heartbeat freshness, task assignment, and branch sync flow.
         </p>
         <div class="hero__actions">
           <a class="button" href="/api/state" target="_blank" rel="noreferrer">Open Raw State</a>
@@ -112,13 +112,22 @@
           </form>
 
           <form class="action-form" id="provision-worker-form">
-            <h3>Provision Worker</h3>
+            <h3>Provision Agent Session</h3>
             <label class="field">
               <span>Project</span>
               <select id="project-select" name="projectId" required></select>
             </label>
             <label class="field">
-              <span>Worker Name</span>
+              <span>Runtime</span>
+              <select id="runtime-kind-select" name="runtimeKind">
+                <option value="vscode-copilot" selected>VS Code Copilot</option>
+                <option value="claude-code">Claude Code</option>
+                <option value="openclaw">OpenClaw</option>
+                <option value="custom">Custom</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Session Name</span>
               <input id="worker-name-input" name="workerName" type="text" required maxlength="80">
             </label>
             <label class="field">
@@ -139,7 +148,7 @@
               <select id="assign-task-select" name="taskId" required></select>
             </label>
             <label class="field">
-              <span>Worker</span>
+              <span>Agent Session</span>
               <select id="assign-worker-select" name="workerId" required></select>
             </label>
             <button class="button" type="submit">Assign Task</button>
@@ -172,17 +181,18 @@
 
       <section class="panel" aria-labelledby="workers-heading">
         <div class="panel__header">
-          <h2 id="workers-heading">Workers</h2>
-          <p class="muted">VS Code worker sessions, their assigned worktrees, heartbeat freshness, and branch sync controls.</p>
+          <h2 id="workers-heading">Agent Sessions</h2>
+          <p class="muted">VS Code-backed agent sessions, their assigned worktrees, heartbeat freshness, and branch sync controls.</p>
         </div>
         <div class="worker-insights" id="worker-insights"></div>
         <div class="table-shell">
           <table>
-            <caption class="sr-only">Worker sessions</caption>
+            <caption class="sr-only">Agent sessions</caption>
             <thead>
               <tr>
-                <th scope="col">Worker</th>
+                <th scope="col">Agent Session</th>
                 <th scope="col">Project</th>
+                <th scope="col">Runtime</th>
                 <th scope="col">Status</th>
                 <th scope="col">Task</th>
                 <th scope="col">Branch</th>
@@ -202,7 +212,7 @@
       <section class="panel" aria-labelledby="tasks-heading">
         <div class="panel__header">
           <h2 id="tasks-heading">Tasks</h2>
-          <p class="muted">Parallel work items tracked by the controller, including direct assignment to available workers.</p>
+          <p class="muted">Parallel work items tracked by the controller, including direct assignment to available agent sessions.</p>
         </div>
         <div class="table-shell">
           <table>
@@ -213,7 +223,7 @@
                 <th scope="col">Project</th>
                 <th scope="col">Status</th>
                 <th scope="col">Priority</th>
-                <th scope="col">Assigned Worker</th>
+                <th scope="col">Assigned Session</th>
                 <th scope="col">Created</th>
                 <th scope="col">Updated</th>
                 <th scope="col">Actions</th>

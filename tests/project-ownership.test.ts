@@ -190,8 +190,24 @@ describe("project ownership enforcement", () => {
     });
 
     assert.equal(provisioned.worker.projectId, project.id);
+    assert.equal(provisioned.worker.runtimeKind, "vscode-copilot");
     assert.equal(provisioned.task?.assignedWorkerId, provisioned.worker.id);
     assert.equal(provisioned.worker.assignedTaskId, task.id);
+  });
+
+  test("controller preserves an explicit runtime kind for a worker session", async () => {
+    const stateStore = await createStateStore();
+    const controller = createController(stateStore);
+
+    const worker = await controller.createWorker({
+      name: "openclaw-session",
+      runtimeKind: "openclaw",
+      worktreePath: path.join(tempCwd, "openclaw", "session"),
+      assignedBranch: "task/openclaw-session",
+    });
+
+    assert.equal(worker.runtimeKind, "openclaw");
+    assert.equal(stateStore.getWorkerById(worker.id)?.runtimeKind, "openclaw");
   });
 
   test("controller rejects unknown project ids during task and worker creation", async () => {
