@@ -1,24 +1,24 @@
 # open-agent-center
 
-open-agent-center is a local-first control plane for orchestrating multiple VS Code Copilot worker windows on one Windows machine.
+open-agent-center is a local-first control plane for orchestrating multiple VS Code Copilot agent sessions on one Windows machine.
 
 Architecture reference: [ARCHITECTURE.md](ARCHITECTURE.md)
 
 The current implementation focuses on the first practical slice of the system:
 
 - register a project
-- provision isolated git worktrees for workers
-- create isolated workers bound to worktree paths and branches
+- provision isolated git worktrees for agent sessions
+- create isolated agent sessions bound to worktree paths and branches
 - create parallel development tasks
-- assign tasks to workers
-- launch VS Code windows for workers
+- assign tasks to agent sessions
+- launch VS Code windows for agent sessions
 - persist local controller state for later dashboard and review work
 
 ## Why This Exists
 
-Running several Copilot-driven development threads in parallel quickly breaks down without isolation and visibility. The first version of open-agent-center treats each VS Code window as a worker session and gives it:
+Running several Copilot-driven development threads in parallel quickly breaks down without isolation and visibility. The first version of open-agent-center treats each VS Code window as a local agent session and gives it:
 
-- a unique worker identity
+- a unique session identity
 - a dedicated worktree path
 - a dedicated branch
 - a tracked task assignment
@@ -26,20 +26,22 @@ Running several Copilot-driven development threads in parallel quickly breaks do
 
 This keeps the problem grounded in supported automation boundaries. The controller manages windows, state, and review flow; Copilot interaction stays inside VS Code.
 
+Compatibility note: the current implementation still uses `worker` in the internal domain model and `/api/workers` routes. In this repository, `worker` currently means a VS Code-backed agent session rather than the higher-level agent identity.
+
 ## Current Implementation
 
 The repository now contains a minimal TypeScript controller service with:
 
 - local HTTP API
 - JSON-backed state persistence in `.data/state.json`
-- in-memory domain model for projects, workers, tasks, runs, artifacts, and events
+- in-memory domain model for projects, agent sessions, tasks, runs, artifacts, and events
 - same-origin validation dashboard served by the controller
-- dashboard operator controls for task creation, assignment, worker provisioning, launch, heartbeat, and branch sync
-- project-aware task and worker binding so assignments stay inside a single repository context
+- dashboard operator controls for task creation, assignment, agent-session provisioning, launch, heartbeat, and branch sync
+- project-aware task and agent-session binding so assignments stay inside a single repository context
 - a VS Code window launcher using the `code` CLI
 - an application layer for orchestration use cases
-- a git worktree provisioning service for new workers
-- a git diff inspection service for worker worktrees
+- a git worktree provisioning service for new agent sessions
+- a git diff inspection service for agent-session worktrees
 
 Current source layout:
 
@@ -47,10 +49,10 @@ Current source layout:
 - `src/application/controllerService.ts`: orchestration use cases
 - `src/routes/api.ts`: HTTP routing
 - `src/services/stateStore.ts`: persistent state and event recording
-- `src/services/windowManager.ts`: worker window launcher
-- `src/services/worktreeManager.ts`: git worktree provisioning
-- `src/services/diffService.ts`: worker diff inspection
-- `src/queries/workerQueries.ts`: worker board read model
+- `src/services/windowManager.ts`: agent session window launcher
+- `src/services/worktreeManager.ts`: agent-session git worktree provisioning
+- `src/services/diffService.ts`: agent-session diff inspection
+- `src/queries/workerQueries.ts`: agent session board read model
 - `src/domain/types.ts`: shared domain types
 
 ## API Surface
@@ -108,17 +110,17 @@ http://127.0.0.1:4317/dashboard
 
 The root path redirects to `/dashboard` for convenience.
 
-The dashboard now supports the main operator loop directly in the browser: register projects, create tasks, provision workers, assign queued work, launch worker windows, send heartbeat updates, and trigger branch sync back to the repository default branch. Tasks can optionally be bound to a project, and worktree-backed workers are automatically bound to their source project so cross-project assignment mistakes are rejected.
+The dashboard now supports the main operator loop directly in the browser: register projects, create tasks, provision agent sessions, assign queued work, launch VS Code windows, send heartbeat updates, and trigger branch sync back to the repository default branch. Tasks can optionally be bound to a project, and worktree-backed sessions are automatically bound to their source project so cross-project assignment mistakes are rejected.
 
-The intended browser-first onboarding flow is: register the repository in the dashboard, provision a worktree-backed worker for that project, then create and assign tasks without dropping to `curl`.
+The intended browser-first onboarding flow is: register the repository in the dashboard, provision a worktree-backed agent session for that project, then create and assign tasks without dropping to `curl`.
 
-The dashboard also includes a shared project scope control for summary cards, workers, tasks, review queue, and recent events, so operators can isolate one repository without changing the action forms.
+The dashboard also includes a shared project scope control for summary cards, agent sessions, tasks, review queue, and recent events, so operators can isolate one repository without changing the action forms.
 
-Workers can now also be archived directly from the dashboard. The archive action currently removes the worker worktree by default, marks the worker record as `archived`, and blocks future assignment or heartbeat updates for that worker.
+Agent sessions can now also be archived directly from the dashboard. The archive action currently removes the session worktree by default, marks the underlying worker record as `archived`, and blocks future assignment or heartbeat updates for that session.
 
-Projects can now be archived through the API once they no longer have live workers or open tasks. Archived projects remain in history, but reject new tasks, workers, and worktree provisioning so repository ownership cannot silently reopen.
+Projects can now be archived through the API once they no longer have live agent sessions or open tasks. Archived projects remain in history, but reject new tasks, sessions, and worktree provisioning so repository ownership cannot silently reopen.
 
-The dashboard project table now exposes the same archive action. Archived projects stay visible with archive metadata, while project selectors for task creation and worktree provisioning only show writable projects. If an archive attempt is blocked, the project row now shows the latest blocking workers and tasks using readable names with ids as secondary detail, and those blockers can be clicked to jump to the matching worker or task row.
+The dashboard project table now exposes the same archive action. Archived projects stay visible with archive metadata, while project selectors for task creation and worktree provisioning only show writable projects. If an archive attempt is blocked, the project row now shows the latest blocking agent sessions and tasks using readable names with ids as secondary detail, and those blockers can be clicked to jump to the matching session or task row.
 
 Project identity note:
 

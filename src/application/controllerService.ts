@@ -1,4 +1,5 @@
 import {
+  AGENT_RUNTIME_KINDS,
   ArchiveProjectResult,
   AssignTaskInput,
   CleanupWorkerInput,
@@ -217,6 +218,10 @@ export class ControllerService {
   async createWorker(input: CreateWorkerInput): Promise<Worker> {
     if (!input.name?.trim()) {
       throw new AppError(400, "WORKER_NAME_REQUIRED", "Worker name is required.");
+    }
+
+    if (input.runtimeKind && !AGENT_RUNTIME_KINDS.includes(input.runtimeKind)) {
+      throw new AppError(400, "AGENT_RUNTIME_INVALID", `Unsupported runtimeKind: ${input.runtimeKind}.`);
     }
 
     if (input.projectId) {
@@ -452,9 +457,14 @@ export class ControllerService {
       throw new AppError(400, "WORKER_NAME_REQUIRED", "workerName is required.");
     }
 
+    if (input.runtimeKind && !AGENT_RUNTIME_KINDS.includes(input.runtimeKind)) {
+      throw new AppError(400, "AGENT_RUNTIME_INVALID", `Unsupported runtimeKind: ${input.runtimeKind}.`);
+    }
+
     const worktree = await this.worktreeManager.create(project, input.workerName, input.branchBase);
     const worker = await this.stateStore.createWorker({
       name: input.workerName,
+      ...(input.runtimeKind ? { runtimeKind: input.runtimeKind } : {}),
       projectId: project.id,
       worktreePath: worktree.worktreePath,
       assignedBranch: worktree.branchName,

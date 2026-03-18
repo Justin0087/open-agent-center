@@ -63,6 +63,7 @@ export function buildWorkerSummaries(
     return {
       workerId: worker.id,
       workerName: worker.name,
+      runtimeKind: worker.runtimeKind,
       status: deriveWorkerStatus(worker.status, worker.lastSeenAt, now),
       ...(worker.projectId ? { projectId: worker.projectId } : {}),
       ...(project ? { projectName: project.name } : {}),

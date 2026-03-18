@@ -45,6 +45,7 @@ const elements = {
   taskDescriptionInput: document.querySelector("#task-description-input"),
   taskPriorityInput: document.querySelector("#task-priority-input"),
   projectSelect: document.querySelector("#project-select"),
+  runtimeKindSelect: document.querySelector("#runtime-kind-select"),
   workerNameInput: document.querySelector("#worker-name-input"),
   branchBaseInput: document.querySelector("#branch-base-input"),
   taskSelect: document.querySelector("#task-select"),
@@ -518,7 +519,7 @@ function renderActionForms(snapshot, workers) {
 function renderSummary(snapshot, projectCount) {
   const cards = [
     ["Projects", projectCount],
-    ["Workers", snapshot.workers?.length ?? 0],
+    ["Agent Sessions", snapshot.workers?.length ?? 0],
     ["Tasks", snapshot.tasks.length],
     ["Runs", snapshot.runs.length],
     ["Artifacts", snapshot.artifacts.length],
@@ -706,11 +707,12 @@ function renderWorkers(workers) {
   renderTableBody(
     elements.workersBody,
     workers,
-    11,
-    "No workers exist yet. Provision one through the controller to validate worktree orchestration.",
+    12,
+    "No agent sessions exist yet. Provision one through the controller to validate worktree orchestration.",
     (worker) => [
       worker.workerName,
       worker.projectName ?? worker.projectId ?? "Unbound",
+      formatRuntimeKind(worker.runtimeKind),
       statusBadge(worker.status),
       worker.taskTitle ?? worker.taskId ?? "Unassigned",
       asMono(worker.branch),
@@ -736,9 +738,9 @@ function renderWorkerInsights(workers) {
   };
 
   const cards = [
-    ["Active", counts.active, "status-badge--active", "Current worker count."],
-    ["Blocked", counts.blocked, "status-badge--blocked", "Current worker count."],
-    ["Offline", counts.offline, "status-badge--offline", "Controller-derived offline workers."],
+    ["Active", counts.active, "status-badge--active", "Current agent session count."],
+    ["Blocked", counts.blocked, "status-badge--blocked", "Current agent session count."],
+    ["Offline", counts.offline, "status-badge--offline", "Controller-derived offline agent sessions."],
     ["Stale Heartbeats", counts.stale, counts.stale > 0 ? "status-badge--stale" : "status-badge--fresh", `Derived from a ${Math.round(HEARTBEAT_STALE_MS / 1000)}s timeout.`],
   ];
 
@@ -793,6 +795,21 @@ function renderTasks(tasks, workers, projects) {
       row.dataset.taskId = task.id;
     },
   );
+}
+
+function formatRuntimeKind(runtimeKind) {
+  switch (runtimeKind) {
+    case "vscode-copilot":
+      return "VS Code Copilot";
+    case "claude-code":
+      return "Claude Code";
+    case "openclaw":
+      return "OpenClaw";
+    case "custom":
+      return "Custom";
+    default:
+      return runtimeKind ?? "Unknown";
+  }
 }
 
 function renderEvents(events) {
@@ -963,7 +980,7 @@ function renderAssignmentWorkerOptions(workers) {
   if (workers.length === 0) {
     const option = document.createElement("option");
     option.value = "";
-    option.textContent = "No compatible workers";
+    option.textContent = "No compatible sessions";
     elements.assignWorkerSelect.replaceChildren(option);
     elements.assignWorkerSelect.value = "";
     return;
@@ -973,7 +990,7 @@ function renderAssignmentWorkerOptions(workers) {
     const option = document.createElement("option");
     option.value = worker.workerId;
     const projectLabel = worker.projectName ?? worker.projectId ?? "unbound";
-    option.textContent = `${worker.workerName} (${projectLabel}, ${humanize(worker.status)})`;
+    option.textContent = `${worker.workerName} (${formatRuntimeKind(worker.runtimeKind)}, ${projectLabel}, ${humanize(worker.status)})`;
     return option;
   });
 
@@ -1173,6 +1190,7 @@ async function submitCreateTask() {
 
 async function submitProvisionWorker() {
   const projectId = elements.projectSelect.value;
+  const runtimeKind = elements.runtimeKindSelect.value;
   const workerName = elements.workerNameInput.value.trim();
   const branchBase = elements.branchBaseInput.value.trim();
   const taskId = elements.taskSelect.value;
@@ -1185,6 +1203,7 @@ async function submitProvisionWorker() {
 
   const payload = {
     workerName,
+    ...(runtimeKind ? { runtimeKind } : {}),
     ...(branchBase ? { branchBase } : {}),
     ...(taskId ? { taskId } : {}),
   };
@@ -1196,10 +1215,11 @@ async function submitProvisionWorker() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     },
-    `Worker ${workerName} provisioned.`,
+    `Agent session ${workerName} provisioned.`,
   );
 
   elements.provisionWorkerForm.reset();
+  elements.runtimeKindSelect.value = "vscode-copilot";
   renderProjectOptions(lastSnapshot.projects);
   renderProvisionTaskOptions(getAssignableTasks(lastSnapshot.tasks));
 }
