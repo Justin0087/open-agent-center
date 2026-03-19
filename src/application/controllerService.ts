@@ -26,14 +26,14 @@ import {
 import { buildWorkerSummaries } from "../queries/workerQueries.js";
 import { buildTaskDetail } from "../queries/taskQueries.js";
 import { DiffService } from "../services/diffService.js";
-import { StateStore } from "../services/stateStore.js";
+import { StateRepository } from "../services/stateRepository.js";
 import { WindowManager } from "../services/windowManager.js";
 import { WorktreeManager } from "../services/worktreeManager.js";
 import { AppError } from "./appError.js";
 
 export class ControllerService {
   constructor(
-    private readonly stateStore: StateStore,
+    private readonly stateStore: StateRepository,
     private readonly windowManager: WindowManager,
     private readonly worktreeManager: WorktreeManager,
     private readonly diffService: DiffService,
@@ -470,7 +470,7 @@ export class ControllerService {
       assignedBranch: worktree.branchName,
     });
 
-    let assignment: Awaited<ReturnType<StateStore["assignTask"]>> | undefined;
+    let assignment: Awaited<ReturnType<StateRepository["assignTask"]>> | undefined;
     if (input.taskId) {
       assignment = await this.assignTask({ taskId: input.taskId, workerId: worker.id });
     }
