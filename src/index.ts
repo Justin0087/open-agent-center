@@ -3,12 +3,12 @@ import { createServer } from "node:http";
 import { ControllerService } from "./application/controllerService.js";
 import { ApiRouter } from "./routes/api.js";
 import { DiffService } from "./services/diffService.js";
-import { StateStore } from "./services/stateStore.js";
+import { createStateRepository } from "./services/stateRepositoryFactory.js";
 import { WindowManager } from "./services/windowManager.js";
 import { WorktreeManager } from "./services/worktreeManager.js";
 
 const port = Number(process.env.PORT ?? 4317);
-const stateStore = new StateStore();
+const stateStore = createStateRepository();
 const windowManager = new WindowManager();
 const worktreeManager = new WorktreeManager();
 const diffService = new DiffService();

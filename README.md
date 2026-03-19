@@ -33,7 +33,9 @@ Compatibility note: the current implementation still uses `worker` in the intern
 The repository now contains a minimal TypeScript controller service with:
 
 - local HTTP API
-- JSON-backed state persistence in `.data/state.json`
+- repository-backed state persistence
+- default JSON-backed state persistence in `.data/state.json`
+- optional SQLite-backed state persistence in `.data/state.sqlite`
 - in-memory domain model for projects, agent sessions, tasks, runs, artifacts, and events
 - same-origin validation dashboard served by the controller
 - dashboard operator controls for task creation, assignment, agent-session provisioning, launch, heartbeat, and branch sync
@@ -48,7 +50,10 @@ Current source layout:
 - `src/index.ts`: server bootstrap
 - `src/application/controllerService.ts`: orchestration use cases
 - `src/routes/api.ts`: HTTP routing
-- `src/services/stateStore.ts`: persistent state and event recording
+- `src/services/stateRepository.ts`: storage abstraction used by the application layer
+- `src/services/stateRepositoryFactory.ts`: startup selection for JSON vs SQLite repositories
+- `src/services/stateStore.ts`: JSON-backed repository implementation
+- `src/services/sqliteStateRepository.ts`: SQLite-backed repository implementation using `sql.js`
 - `src/services/windowManager.ts`: agent session window launcher
 - `src/services/worktreeManager.ts`: agent-session git worktree provisioning
 - `src/services/diffService.ts`: agent-session diff inspection
@@ -101,6 +106,14 @@ Run the controller in development mode:
 ```bash
 npm run dev
 ```
+
+Run the controller with SQLite-backed persistence instead of JSON:
+
+```bash
+OPEN_AGENT_CENTER_STORAGE=sqlite npm run dev
+```
+
+On first boot in SQLite mode, the controller will import the existing `.data/state.json` snapshot if a SQLite database does not already exist.
 
 Open the validation dashboard in your browser:
 

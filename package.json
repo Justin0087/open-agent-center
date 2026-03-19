@@ -2,7 +2,7 @@
   "name": "open-agent-center",
   "version": "0.1.0",
   "private": true,
-  "description": "Local control plane for orchestrating multiple VS Code Copilot worker windows.",
+  "description": "Local control plane for orchestrating multiple VS Code Copilot agent sessions.",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -24,7 +24,9 @@
   "engines": {
     "node": ">=20.11"
   },
-  "dependencies": {},
+  "dependencies": {
+    "sql.js": "^1.14.1"
+  },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "tsx": "^4.20.0",

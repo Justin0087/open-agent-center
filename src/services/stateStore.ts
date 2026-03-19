@@ -1,5 +1,4 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 
 import {
   AgentRuntimeKind,
@@ -26,10 +25,9 @@ import {
   Worker,
   WorkerCleanupSummary,
 } from "../domain/types.js";
+import { StateRepository } from "./stateRepository.js";
+import { DATA_DIR, JSON_STATE_FILE } from "./statePersistencePaths.js";
 import { createId, nowIso } from "../utils/ids.js";
-
-const DATA_DIR = path.resolve(process.cwd(), ".data");
-const STATE_FILE = path.join(DATA_DIR, "state.json");
 
 const EMPTY_STATE: AppState = {
   projects: [],
@@ -44,10 +42,10 @@ function cloneState<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-export class StateStore {
-  private state: AppState = cloneState(EMPTY_STATE);
+export class StateStore implements StateRepository {
+  protected state: AppState = cloneState(EMPTY_STATE);
 
-  private normalizeState(): boolean {
+  protected normalizeState(): boolean {
     let changed = false;
 
     this.state.workers = this.state.workers.map((worker) => {
@@ -132,7 +130,7 @@ export class StateStore {
     await mkdir(DATA_DIR, { recursive: true });
 
     try {
-      const raw = await readFile(STATE_FILE, "utf8");
+      const raw = await readFile(JSON_STATE_FILE, "utf8");
       this.state = JSON.parse(raw) as AppState;
       if (this.normalizeState()) {
         await this.persist();
@@ -654,7 +652,7 @@ export class StateStore {
     };
   }
 
-  private appendEvent(event: Omit<EventRecord, "id" | "ts">): void {
+  protected appendEvent(event: Omit<EventRecord, "id" | "ts">): void {
     this.state.events.push({
       id: createId(),
       ts: nowIso(),
@@ -662,8 +660,8 @@ export class StateStore {
     });
   }
 
-  private async persist(): Promise<void> {
-    await writeFile(STATE_FILE, `${JSON.stringify(this.state, null, 2)}\n`, "utf8");
+  protected async persist(): Promise<void> {
+    await writeFile(JSON_STATE_FILE, `${JSON.stringify(this.state, null, 2)}\n`, "utf8");
   }
 }
 
