@@ -263,6 +263,24 @@ export interface CreateProjectWorktreeInput {
   taskId?: string;
 }
 
+export interface RuntimeCapabilities {
+  canOpenEditor: boolean;
+  supportsSnapshots: boolean;
+}
+
+export interface LaunchResult {
+  ok: boolean;
+  processId?: number;
+  error?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RuntimeAdapter {
+  kind: AgentRuntimeKind;
+  launch(worker: Worker): Promise<LaunchResult>;
+  getCapabilities?(): RuntimeCapabilities;
+}
+
 export interface WorktreeDefinition {
   worktreePath: string;
   branchName: string;
@@ -273,6 +291,7 @@ export interface WorkerSummary {
   workerId: string;
   workerName: string;
   runtimeKind: AgentRuntimeKind;
+  runtimeCapabilities?: RuntimeCapabilities;
   status: WorkerStatus;
   projectId?: string;
   projectName?: string;

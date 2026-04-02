@@ -23,18 +23,18 @@ import {
   WorkerDiffSummary,
   WorkerSyncSummary,
 } from "../domain/types.js";
+import { RuntimeAdapterRegistry } from "../infra/runtimeAdapterRegistry.js";
 import { buildWorkerSummaries } from "../queries/workerQueries.js";
 import { buildTaskDetail } from "../queries/taskQueries.js";
 import { DiffService } from "../services/diffService.js";
 import { StateRepository } from "../services/stateRepository.js";
-import { WindowManager } from "../services/windowManager.js";
 import { WorktreeManager } from "../services/worktreeManager.js";
 import { AppError } from "./appError.js";
 
 export class ControllerService {
   constructor(
     private readonly stateStore: StateRepository,
-    private readonly windowManager: WindowManager,
+    private readonly runtimeAdapters: RuntimeAdapterRegistry,
     private readonly worktreeManager: WorktreeManager,
     private readonly diffService: DiffService,
   ) {}
@@ -51,6 +51,9 @@ export class ControllerService {
     const state = this.stateStore.getState();
     const includesDiffMetrics =
       input.includeDiff !== false || input.hasChanges !== undefined || input.sortBy === "changedFileCount";
+    const capabilitiesByRuntimeKind = Object.fromEntries(
+      AGENT_RUNTIME_KINDS.map((kind) => [kind, this.runtimeAdapters.getCapabilitiesFor(kind)]),
+    );
 
     const metricsEntries = includesDiffMetrics
       ? await Promise.all(
@@ -71,7 +74,7 @@ export class ControllerService {
         )
       : [];
 
-    const summaries = buildWorkerSummaries(state, Object.fromEntries(metricsEntries));
+    const summaries = buildWorkerSummaries(state, Object.fromEntries(metricsEntries), capabilitiesByRuntimeKind);
 
     const filtered = summaries.filter((worker) => {
       if (input.status && worker.status !== input.status) {
@@ -271,10 +274,13 @@ export class ControllerService {
     );
 
     const state = this.stateStore.getState();
+    const capabilitiesByRuntimeKind = Object.fromEntries(
+      AGENT_RUNTIME_KINDS.map((kind) => [kind, this.runtimeAdapters.getCapabilitiesFor(kind)]),
+    );
     const summary = buildWorkerSummaries({
       ...state,
       workers: state.workers.map((entry) => (entry.id === updatedWorker.id ? updatedWorker : entry)),
-    }).find((entry) => entry.workerId === workerId);
+    }, {}, capabilitiesByRuntimeKind).find((entry) => entry.workerId === workerId);
 
     if (!summary) {
       throw new AppError(500, "WORKER_HEARTBEAT_FAILED", `Worker ${workerId} could not be summarized.`);
@@ -388,7 +394,11 @@ export class ControllerService {
     }
 
     try {
-      const launchResult = this.windowManager.launch(worker.worktreePath);
+      const adapter = this.runtimeAdapters.resolve(worker.runtimeKind);
+      const launchResult = await adapter.launch(worker);
+      if (!launchResult.ok) {
+        throw new Error(launchResult.error ?? "Unknown launch failure.");
+      }
       return await this.stateStore.markWorkerLaunched(worker.id, launchResult.processId);
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Unknown launch failure.";

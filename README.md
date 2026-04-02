@@ -2,8 +2,6 @@
 
 open-agent-center is a local-first control plane for orchestrating multiple VS Code Copilot agent sessions on one Windows machine.
 
-Architecture reference: [ARCHITECTURE.md](ARCHITECTURE.md)
-
 The current implementation focuses on the first practical slice of the system:
 
 - register a project
@@ -39,6 +37,7 @@ The repository now contains a minimal TypeScript controller service with:
 - in-memory domain model for projects, agent sessions, tasks, runs, artifacts, and events
 - same-origin validation dashboard served by the controller
 - dashboard operator controls for task creation, assignment, agent-session provisioning, launch, heartbeat, and branch sync
+- a runtime adapter boundary keyed by `runtimeKind`
 - project-aware task and agent-session binding so assignments stay inside a single repository context
 - a VS Code window launcher using the `code` CLI
 - an application layer for orchestration use cases
@@ -57,6 +56,8 @@ Current source layout:
 - `src/services/windowManager.ts`: agent session window launcher
 - `src/services/worktreeManager.ts`: agent-session git worktree provisioning
 - `src/services/diffService.ts`: agent-session diff inspection
+- `src/adapters/`: runtime-specific adapter implementations
+- `src/infra/runtimeAdapterRegistry.ts`: runtime adapter registry used by the application layer
 - `src/queries/workerQueries.ts`: agent session board read model
 - `src/domain/types.ts`: shared domain types
 
@@ -87,6 +88,8 @@ Available endpoints:
 - `POST /api/tasks/:taskId/transitions`
 - `POST /api/tasks/:taskId/review`
 - `POST /api/workers/:workerId/launch`
+
+`GET /api/workers` now includes an additive `runtimeCapabilities` field on each worker summary when capability metadata is available for that runtime. These capability flags are derived at read time from the runtime adapter layer and are not persisted in JSON or SQLite state.
 
 ## Getting Started
 
@@ -123,11 +126,13 @@ http://127.0.0.1:4317/dashboard
 
 The root path redirects to `/dashboard` for convenience.
 
-The dashboard now supports the main operator loop directly in the browser: register projects, create tasks, provision agent sessions, assign queued work, launch VS Code windows, send heartbeat updates, and trigger branch sync back to the repository default branch. Tasks can optionally be bound to a project, and worktree-backed sessions are automatically bound to their source project so cross-project assignment mistakes are rejected.
+The dashboard now supports the main operator loop directly in the browser: register projects, create tasks, provision agent sessions, assign queued work, launch supported runtimes, send heartbeat updates, and trigger branch sync back to the repository default branch. Tasks can optionally be bound to a project, and worktree-backed sessions are automatically bound to their source project so cross-project assignment mistakes are rejected.
 
 The intended browser-first onboarding flow is: register the repository in the dashboard, provision a worktree-backed agent session for that project, then create and assign tasks without dropping to `curl`.
 
 The dashboard also includes a shared project scope control for summary cards, agent sessions, tasks, review queue, and recent events, so operators can isolate one repository without changing the action forms.
+
+The worker board now surfaces additive runtime capability hints as part of each runtime cell. The provisioning form also shows the selected runtime's current capability summary before you create a new session. Worker actions are only disabled where the capability is explicit. For example, runtimes without controller-driven editor launch support keep their rows and history visible, but their Launch action is disabled until a concrete adapter implementation exists.
 
 Agent sessions can now also be archived directly from the dashboard. The archive action currently removes the session worktree by default, marks the underlying worker record as `archived`, and blocks future assignment or heartbeat updates for that session.
 
@@ -297,6 +302,14 @@ Run a local smoke check for worker archive and worktree cleanup:
 ```bash
 npm run smoke:cleanup
 ```
+
+Run a lightweight smoke check for runtime capability exposure in `GET /api/workers` and the dashboard runtime capability UI wiring:
+
+```bash
+npm run smoke:dashboard-runtime
+```
+
+This smoke will reuse an already-running controller on `http://127.0.0.1:4317` when available. If no controller is reachable, it will start a temporary local controller, run the checks, and stop that process automatically.
 
 Run a local smoke check for blocked worker cleanup while the worker is still assigned:
 

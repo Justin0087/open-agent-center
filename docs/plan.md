@@ -1,62 +1,97 @@
 ## Plan: Runtime Adapter Contract
 
-Use the next implementation slice to turn `runtimeKind` from stored metadata into a real application boundary. The recommended scope is one incremental runtime-adapter PR: introduce an adapter contract and registry, route worker launch through it, ship `vscode-copilot` as the first concrete adapter, and expose additive runtime capability metadata on the existing worker board response so the dashboard can explain and gate actions without breaking `/api/workers` compatibility. Do not broaden this slice into non-VS Code launch implementations, API renaming, or more SQLite schema work.
+Turn `runtimeKind` from stored metadata into a real runtime boundary in small, low-risk slices. The recommended path is three stages: first introduce the adapter boundary and move worker launch behind it, then expose derived runtime capabilities on read models, and only after that update dashboard UX and docs. This keeps the first implementation PR narrow and testable.
 
-**Steps**
-1. Phase 1: Define the runtime boundary. Add runtime adapter types for launch result, optional heartbeat hook, optional runtime snapshot, and a registry keyed by `AgentRuntimeKind`. Keep the contract minimal: it should support current launch flow first and leave room for richer health semantics later.
-2. Phase 1: Add concrete adapters. Wrap the existing VS Code launcher behind a `vscode-copilot` adapter. Add simple placeholder adapters for `claude-code`, `openclaw`, and `custom` so controller dispatch does not devolve into branching logic. Placeholder adapters may intentionally return predictable unsupported errors for launch if that is the chosen policy.
-3. Phase 1: Refactor controller launch through the registry. Update `ControllerService.launchWorker` so it resolves the adapter from `worker.runtimeKind`, calls the adapter, then preserves the current state transitions and event recording through `markWorkerLaunched` and `markWorkerLaunchFailed`. Keep route shapes and response semantics unchanged.
-4. Phase 1: Keep heartbeat backward-compatible. Leave the external heartbeat route unchanged. Optionally add an adapter hook point in `heartbeatWorker`, but do not require runtime-specific heartbeat behavior in this PR unless it is trivial and fully testable.
-5. Phase 2: Expose runtime capabilities on read models. Add additive capability metadata to the existing worker summary shape, derived from runtime kind through the adapter or a shared capability mapper. Capabilities should be derived at read time, not stored in persistence.
-6. Phase 2: Update dashboard runtime UX. Surface a small runtime capability summary in the worker table and provisioning form, and disable unsupported worker actions based on runtime capability while keeping existing project/task state gating intact.
-7. Phase 2: Keep docs aligned. Update README and architecture docs to reflect the new runtime boundary, the still-stable `/api/workers` routes, and the fact that capability exposure is now implemented while broader runtime behavior remains incremental.
-8. Phase 3: Expand tests and smoke coverage. Add controller tests for adapter resolution and launch outcomes, and ensure existing smoke paths still pass without route or payload regressions.
+**Stage 1: Runtime Boundary**
+1. Add minimal runtime adapter types in `src/domain/types.ts`.
+This stage should only define what the current launch flow actually needs:
+- `RuntimeAdapter`
+- `LaunchResult`
+- `RuntimeCapabilities` as static metadata
+- a registry keyed by `AgentRuntimeKind`
+2. Keep the adapter contract intentionally small.
+Include `launch(worker)` and capability access. Do not include runtime snapshot semantics yet because there is no current caller that needs them.
+3. Keep heartbeat unchanged externally.
+Do not make runtime-specific heartbeat behavior part of the first implementation slice. If a hook is added, it should remain optional and unused in normal flow.
+4. Add the concrete `vscode-copilot` adapter.
+Wrap the current `WindowManager` launch behavior instead of reimplementing it.
+5. Add placeholder adapters for `claude-code`, `openclaw`, and `custom`.
+These should fail launch explicitly with predictable operator-facing errors rather than silently falling back to VS Code behavior.
+6. Inject the registry through composition.
+Construct the registry in `src/index.ts` and pass it into `ControllerService` so runtime selection is resolved centrally.
+7. Refactor `ControllerService.launchWorker` to dispatch through the registry.
+Preserve the existing route contract, response shape, and state transitions by continuing to call `markWorkerLaunched` and `markWorkerLaunchFailed` exactly as today.
+8. Add launch-focused tests.
+Cover adapter resolution, successful launch, unsupported runtime launch, and launch failure propagation.
 
-**Implementation sequence**
-1. Add runtime adapter types and registry support.
-2. Add the `vscode-copilot` adapter around the existing `WindowManager`.
-3. Add placeholder adapters for the other declared runtime kinds.
-4. Thread the registry into the composition root and controller constructor.
-5. Refactor `launchWorker` to use adapter dispatch.
-6. Add runtime capability metadata to worker summaries.
-7. Update dashboard rendering for capability hints and disabled actions.
-8. Update docs and tests.
+**Stage 2: Runtime Capabilities on Read Models**
+1. Add an optional additive `runtimeCapabilities` field to `WorkerSummary`.
+This should be derived at read time from the adapter or a capability mapper, not stored in persistence.
+2. Update `buildWorkerSummaries` to attach capability metadata.
+Keep all current fields intact so `GET /api/workers` remains backward-compatible.
+3. Defer task-detail capability propagation unless a real UI need appears.
+Worker board support is sufficient for the first capability rollout.
+4. Validate compatibility through API and repository tests.
+This stage should not require schema changes in JSON or SQLite persistence.
 
-**Parallelism and dependencies**
-1. Steps 1 through 5 are sequential because the controller cannot dispatch until the adapter contract and registry exist.
-2. Step 6 can begin once the adapter capability shape is fixed.
-3. Steps 7 and 8 can run in parallel after the API and UI shapes stabilize.
+**Stage 3: Dashboard UX and Docs**
+1. Surface a small runtime capability hint in the worker board and provisioning form.
+Keep the UI additive and non-blocking.
+2. Disable unsupported actions only where runtime capability clearly disallows them.
+Do not regress existing task/project lifecycle gating.
+3. Update operator docs.
+Document the adapter boundary and additive worker capability fields in `README.md`.
+4. Do not plan around `ARCHITECTURE.md` unless that file is added.
+The current repo context does not show that file, so it should not be treated as a required edit target.
+
+**Implementation Order**
+1. Stage 1 adapter types and registry.
+2. Stage 1 `vscode-copilot` adapter.
+3. Stage 1 placeholder adapters.
+4. Stage 1 controller injection and `launchWorker` refactor.
+5. Stage 1 tests.
+6. Stage 2 worker summary capability field.
+7. Stage 3 dashboard updates.
+8. Stage 3 docs updates.
+
+**Dependencies**
+1. Stage 1 is sequential.
+The controller cannot dispatch through adapters until the contract, registry, and concrete registrations exist.
+2. Stage 2 depends on the Stage 1 capability shape being finalized.
+3. Stage 3 depends on the Stage 2 response shape being stable.
 
 **Relevant files**
-- `src/application/controllerService.ts` — refactor `launchWorker`, optionally add a runtime hook point in `heartbeatWorker`, and thread runtime capability data into read-model responses where appropriate.
-- `src/index.ts` — compose and inject the runtime adapter registry.
-- `src/domain/types.ts` — define any domain-visible runtime capability or adapter result contracts used by the worker board.
-- `src/services/windowManager.ts` — keep as the low-level VS Code process launcher used by the `vscode-copilot` adapter.
-- `src/routes/api.ts` — preserve route compatibility and, if needed, validate any additive list-workers query parameters or response typing changes.
-- `src/queries/workerQueries.ts` — attach derived runtime capability metadata to worker summaries.
-- `src/queries/taskQueries.ts` — optionally mirror runtime capability metadata in task-detail assigned-worker summaries if the review panel needs it.
-- `public/dashboard.html` — add minimal UI affordances for runtime capability hints.
-- `public/dashboard.js` — render runtime capabilities and gate unsupported actions in the worker board and provision form.
-- `README.md` — document runtime capability fields and operator-visible behavior changes.
-- `ARCHITECTURE.md` — move runtime adapters from planned-only to partially implemented.
-- `tests/project-ownership.test.ts` — extend or complement with launch-path coverage through the adapter boundary.
-- `tests/sqlite-state-repository.test.ts` — no direct runtime work expected here; this file is out of scope unless a regression appears.
+- `src/application/controllerService.ts` — move worker launch to adapter dispatch while preserving current state transitions.
+- `src/index.ts` — build and inject the runtime adapter registry.
+- `src/domain/types.ts` — define adapter contract and additive runtime capability types.
+- `src/services/windowManager.ts` — keep as the low-level VS Code launcher used by the `vscode-copilot` adapter.
+- `src/queries/workerQueries.ts` — add derived runtime capability fields during read-model construction in Stage 2.
+- `src/routes/api.ts` — preserve route compatibility and validate that no route shape changes are introduced.
+- `public/dashboard.js` — render capability hints and disable unsupported actions in Stage 3.
+- `public/dashboard.html` — add minimal UI affordances only if needed.
+- `README.md` — document the runtime boundary and additive capability fields.
+- `tests/project-ownership.test.ts` — extend only if this remains the best controller-level test location.
+- `tests/sqlite-state-repository.test.ts` — regression coverage only; no direct runtime logic should be added here.
+- `tests/controller-runtime-adapters.test.ts` — preferred new test file for launch-path coverage if a separate controller test file is cleaner.
 
 **Verification**
-1. Confirm `vscode-copilot` workers still launch successfully through `POST /api/workers/:workerId/launch` with unchanged response and event behavior.
-2. Confirm unsupported runtime launch behavior is explicit and predictable, with clear operator-facing error semantics.
-3. Confirm `GET /api/workers` remains backward-compatible and only adds runtime capability fields.
-4. Confirm dashboard actions are disabled only when runtime capability disallows them, without regressing existing task/project lifecycle gating.
-5. Confirm `npm run check` and `npm test` pass, and rerun existing smoke flows that cover provisioning, launch, heartbeat, and lifecycle paths.
-6. Confirm both JSON and SQLite repositories behave identically under the new runtime adapter layer.
+1. Confirm `POST /api/workers/:workerId/launch` behaves the same for `vscode-copilot` workers before and after the refactor.
+2. Confirm unsupported runtimes fail with explicit, predictable errors.
+3. Confirm `GET /api/workers` remains backward-compatible and only adds optional fields.
+4. Confirm `npm run check` and `npm test` pass.
+5. Confirm smoke flows covering provisioning, launch, heartbeat, and review still pass.
+6. Confirm JSON and SQLite-backed repositories behave the same because capabilities are derived, not persisted.
 
-**Decisions**
-- Included scope: adapter contract, registry, first concrete adapter, additive capability exposure, dashboard hints, tests, and docs.
-- Excluded scope: non-VS Code runtime launch implementations beyond placeholder adapters, API renaming, scheduler work, and further SQLite schema evolution.
-- Preferred compatibility rule: keep `/api/workers` and current payloads stable; use additive fields only.
-- Preferred capability rule: derive runtime capabilities from code at read time rather than persisting them.
+**Scope Boundaries**
+- Included now: adapter contract, registry, first concrete adapter, placeholder adapters, launch refactor, and launch-focused tests.
+- Deferred to follow-up work: capability exposure on read models, dashboard capability UX, and documentation updates.
+- Excluded: new runtime implementations beyond placeholders, API renaming, scheduler work, and persistence schema changes.
 
-**Further Considerations**
-1. Decide unsupported-runtime policy before implementation starts. Option A: placeholder adapters fail launch clearly. Option B: all runtime kinds temporarily reuse the VS Code launcher. Recommendation: Option A, because it keeps semantics honest.
-2. Decide whether heartbeat hooks are part of this PR. Recommendation: keep heartbeat externally unchanged and make adapter heartbeat hooks optional so launch refactor stays the main risk.
-3. Decide whether task detail needs capability metadata immediately. Recommendation: worker board first; task detail only if the review panel needs runtime-specific action explanations in the same PR.
+**Recommended First PR**
+1. Add adapter contract and registry.
+2. Add `vscode-copilot` plus placeholder adapters.
+3. Inject registry into `ControllerService`.
+4. Refactor `launchWorker`.
+5. Add focused controller tests.
+
+This version is intentionally narrower than the earlier draft. It keeps the first PR centered on the runtime boundary itself, which is the highest-value and highest-risk change.

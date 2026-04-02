@@ -46,6 +46,7 @@ const elements = {
   taskPriorityInput: document.querySelector("#task-priority-input"),
   projectSelect: document.querySelector("#project-select"),
   runtimeKindSelect: document.querySelector("#runtime-kind-select"),
+  runtimeCapabilityHint: document.querySelector("#runtime-capability-hint"),
   workerNameInput: document.querySelector("#worker-name-input"),
   branchBaseInput: document.querySelector("#branch-base-input"),
   taskSelect: document.querySelector("#task-select"),
@@ -143,6 +144,62 @@ function renderSnapshot(snapshot, workerBoard) {
   renderReviewQueue(view.snapshot);
   renderEvents(view.events);
   applyPendingNavigation();
+  attachPanelToggles();
+}
+
+// Attach collapse/expand toggles only to the main panels the user requested.
+function attachPanelToggles() {
+  const panels = [
+    "projects-heading",
+    "workers-heading",
+    "tasks-heading",
+    "review-heading",
+  ];
+
+  for (const headingId of panels) {
+    const section = document.querySelector(`section[aria-labelledby="${headingId}"]`);
+    if (!section) continue;
+
+    const header = section.querySelector(".panel__header");
+    if (!header) continue;
+
+    if (header.querySelector(".panel-toggle")) continue;
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "panel-toggle";
+    toggle.title = "Collapse / Expand";
+    toggle.setAttribute("aria-expanded", "true");
+    toggle.textContent = "▾";
+
+    header.appendChild(toggle);
+
+    const storageKey = `dashboard:panel:${headingId}`;
+
+    const setCollapsed = (collapsed) => {
+      // hide all children except the header
+      for (const node of Array.from(section.children)) {
+        if (node === header) continue;
+        node.hidden = collapsed;
+      }
+      toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      toggle.textContent = collapsed ? "▸" : "▾";
+      try {
+        if (collapsed) localStorage.setItem(storageKey, "1"); else localStorage.removeItem(storageKey);
+      } catch (e) {}
+    };
+
+    // restore persisted state
+    try {
+      const collapsed = localStorage.getItem(storageKey) === "1";
+      if (collapsed) setCollapsed(true);
+    } catch (e) {}
+
+    toggle.addEventListener("click", () => {
+      const expanded = toggle.getAttribute("aria-expanded") === "true";
+      setCollapsed(expanded);
+    });
+  }
 }
 
 function buildScopedView(snapshot, workers) {
@@ -513,6 +570,7 @@ function renderActionForms(snapshot, workers) {
     disableAssign: assignableTasks.length === 0 || getAssignableWorkersForSelectedTask(assignableTasks, workers).length === 0,
   };
 
+  renderProvisionRuntimeHint(workers);
   updateActionDisabledState();
 }
 
@@ -712,7 +770,7 @@ function renderWorkers(workers) {
     (worker) => [
       worker.workerName,
       worker.projectName ?? worker.projectId ?? "Unbound",
-      formatRuntimeKind(worker.runtimeKind),
+      renderRuntimeCell(worker),
       statusBadge(worker.status),
       worker.taskTitle ?? worker.taskId ?? "Unassigned",
       asMono(worker.branch),
@@ -809,6 +867,86 @@ function formatRuntimeKind(runtimeKind) {
       return "Custom";
     default:
       return runtimeKind ?? "Unknown";
+  }
+}
+
+function renderRuntimeCell(worker) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "runtime-capability-stack";
+
+  const title = textSpan(formatRuntimeKind(worker.runtimeKind));
+  wrapper.append(title);
+
+  if (!worker.runtimeCapabilities) {
+    return wrapper;
+  }
+
+  const list = document.createElement("div");
+  list.className = "runtime-capability-list";
+  list.append(
+    createCapabilityBadge("Editor Launch", worker.runtimeCapabilities.canOpenEditor),
+    createCapabilityBadge("Snapshots", worker.runtimeCapabilities.supportsSnapshots),
+  );
+
+  const note = document.createElement("p");
+  note.className = "runtime-capability-note";
+  note.textContent = worker.runtimeCapabilities.canOpenEditor
+    ? "Supports controller-driven launch."
+    : "Launch is unavailable for this runtime.";
+
+  wrapper.append(list, note);
+  return wrapper;
+}
+
+function createCapabilityBadge(label, enabled) {
+  const badge = document.createElement("span");
+  badge.className = `status-badge ${enabled ? "status-badge--idle" : "status-badge--offline"}`;
+  badge.textContent = `${label}: ${enabled ? "Yes" : "No"}`;
+  return badge;
+}
+
+function renderProvisionRuntimeHint(workers) {
+  const runtimeKind = elements.runtimeKindSelect.value;
+  const capabilitySource = workers.find((worker) => worker.runtimeKind === runtimeKind)?.runtimeCapabilities
+    ?? getDefaultRuntimeCapabilities(runtimeKind);
+
+  if (!capabilitySource) {
+    elements.runtimeCapabilityHint.hidden = true;
+    elements.runtimeCapabilityHint.replaceChildren();
+    return;
+  }
+
+  const title = document.createElement("p");
+  title.className = "runtime-capability-card__title";
+  title.textContent = `${formatRuntimeKind(runtimeKind)} capabilities`;
+
+  const summary = document.createElement("p");
+  summary.className = "runtime-capability-card__summary";
+  summary.textContent = capabilitySource.canOpenEditor
+    ? "This runtime can be launched from the dashboard after provisioning."
+    : "This runtime can be provisioned, but launch remains unavailable until a concrete adapter is implemented.";
+
+  const list = document.createElement("div");
+  list.className = "runtime-capability-list";
+  list.append(
+    createCapabilityBadge("Editor Launch", capabilitySource.canOpenEditor),
+    createCapabilityBadge("Snapshots", capabilitySource.supportsSnapshots),
+  );
+
+  elements.runtimeCapabilityHint.hidden = false;
+  elements.runtimeCapabilityHint.replaceChildren(title, summary, list);
+}
+
+function getDefaultRuntimeCapabilities(runtimeKind) {
+  switch (runtimeKind) {
+    case "vscode-copilot":
+      return { canOpenEditor: true, supportsSnapshots: false };
+    case "claude-code":
+    case "openclaw":
+    case "custom":
+      return { canOpenEditor: false, supportsSnapshots: false };
+    default:
+      return undefined;
   }
 }
 
@@ -1016,9 +1154,11 @@ function renderWorkerActions(worker) {
   const actionRow = document.createElement("div");
   actionRow.className = "action-row";
 
+  const canLaunch = worker.runtimeCapabilities?.canOpenEditor !== false;
+
   const launchButton = createActionButton("Launch", async () => {
     await mutateJson(`/api/workers/${worker.workerId}/launch`, { method: "POST" }, `Worker ${worker.workerName} launched.`);
-  }, worker.processId !== undefined);
+  }, worker.processId !== undefined || !canLaunch);
 
   const syncButton = createActionButton("Sync", async () => {
     await mutateJson(
@@ -1055,6 +1195,13 @@ function renderWorkerActions(worker) {
   );
 
   wrapper.append(actionRow, heartbeatRow);
+
+  if (!canLaunch) {
+    const note = document.createElement("p");
+    note.className = "action-note action-note--warning";
+    note.textContent = `Launch is disabled because ${formatRuntimeKind(worker.runtimeKind)} does not currently expose controller-driven launch support.`;
+    wrapper.append(note);
+  }
 
   if (worker.lastSyncSummary) {
     const note = document.createElement("p");
@@ -1119,6 +1266,10 @@ function bindActions() {
 
   elements.projectSelect.addEventListener("change", () => {
     syncProvisionTaskOptions();
+  });
+
+  elements.runtimeKindSelect.addEventListener("change", () => {
+    renderProvisionRuntimeHint(lastWorkerBoard.items);
   });
 
   elements.assignTaskSelect.addEventListener("change", () => {
