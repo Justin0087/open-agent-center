@@ -215,6 +215,69 @@ h1 {
   border: 1px solid var(--line);
 }
 
+.runtime-capability-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.runtime-capability-card[hidden] {
+  display: none;
+}
+
+.runtime-capability-card__title {
+  margin: 0;
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.runtime-capability-card__summary {
+  margin: 0;
+  color: var(--ink);
+}
+
+.runtime-capability-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.runtime-capability-stack {
+  display: grid;
+  gap: 6px;
+}
+
+.runtime-capability-note {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+/* Panel collapse/expand toggle (used for Projects, Agent Sessions, Tasks, Review Queue) */
+.panel-toggle {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.85);
+  color: var(--ink);
+  border-radius: 10px;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.panel-toggle:focus { outline: 3px solid rgba(23,69,209,0.18); }
+
+/* When panels collapse we hide their non-header children using the `[hidden]` attribute set by JS. */
+
 .summary-card {
   border-radius: 18px;
   border: 1px solid var(--line);

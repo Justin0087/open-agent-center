@@ -1,4 +1,4 @@
-import { AppState, EventRecord, WorkerSummary, WorkerSyncSummary } from "../domain/types.js";
+import { AgentRuntimeKind, AppState, EventRecord, RuntimeCapabilities, WorkerSummary, WorkerSyncSummary } from "../domain/types.js";
 import { deriveWorkerStatus, getHeartbeatAgeMs, isWorkerStale } from "../domain/workerStatus.js";
 
 interface WorkerBoardMetrics {
@@ -34,6 +34,7 @@ function getLastSyncEvent(events: EventRecord[], workerId: string): EventRecord 
 export function buildWorkerSummaries(
   state: AppState,
   metricsByWorkerId: Record<string, WorkerBoardMetrics> = {},
+  capabilitiesByRuntimeKind: Partial<Record<AgentRuntimeKind, RuntimeCapabilities>> = {},
 ): WorkerSummary[] {
   const now = Date.now();
   const projectById = new Map(state.projects.map((project) => [project.id, project]));
@@ -57,6 +58,7 @@ export function buildWorkerSummaries(
           }
         : undefined;
     const metrics = metricsByWorkerId[worker.id];
+    const runtimeCapabilities = capabilitiesByRuntimeKind[worker.runtimeKind];
     const heartbeatAgeMs = getHeartbeatAgeMs(worker.lastSeenAt, now);
     const isStale = isWorkerStale(worker.lastSeenAt, now);
 
@@ -64,6 +66,7 @@ export function buildWorkerSummaries(
       workerId: worker.id,
       workerName: worker.name,
       runtimeKind: worker.runtimeKind,
+      ...(runtimeCapabilities ? { runtimeCapabilities } : {}),
       status: deriveWorkerStatus(worker.status, worker.lastSeenAt, now),
       ...(worker.projectId ? { projectId: worker.projectId } : {}),
       ...(project ? { projectName: project.name } : {}),

@@ -17,6 +17,7 @@
     "smoke:project-archive:blocked": "pwsh -File scripts/smoke-project-archive.ps1 -Scenario blocked",
     "smoke:cleanup": "pwsh -File scripts/smoke-worker-cleanup.ps1",
     "smoke:cleanup:blocked": "pwsh -File scripts/smoke-worker-cleanup.ps1 -Scenario blocked",
+    "smoke:dashboard-runtime": "pwsh -File scripts/smoke-dashboard-runtime.ps1",
     "smoke:review": "pwsh -File scripts/smoke-review-queue.ps1",
     "smoke:review:conflict": "pwsh -File scripts/smoke-review-queue.ps1 -Scenario approve-conflict",
     "smoke:review:changes": "pwsh -File scripts/smoke-review-queue.ps1 -Scenario request-changes-reassign"
